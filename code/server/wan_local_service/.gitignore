@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+logs/*
+!logs/.gitkeep
+outputs/*
+!outputs/.gitkeep
+storage/*
+!storage/.gitkeep
+third_party/Wan2.2/
+third_party/Wan2.2-TI2V-5B/
