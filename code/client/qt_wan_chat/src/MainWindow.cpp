@@ -225,7 +225,9 @@ void MainWindow::setupUi()
     splitter->setStretchFactor(0, 2);
     splitter->setStretchFactor(1, 3);
     splitter->setStretchFactor(2, 3);
+    splitter->setHandleWidth(1);
     setCentralWidget(splitter);
+    applyVisualStyle();
 
     statusBar()->showMessage(QStringLiteral("Ready"), 3000);
 
@@ -320,10 +322,13 @@ void MainWindow::startTaskMonitorSmoke(const QString &taskId, int timeoutMs, con
 QWidget *MainWindow::buildTasksPanel()
 {
     auto *panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("sidePanel"));
     auto *layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setContentsMargins(14, 14, 10, 14);
+    layout->setSpacing(10);
 
     auto *label = new QLabel(QStringLiteral("Tasks"), panel);
+    label->setProperty("role", QStringLiteral("sectionTitle"));
     layout->addWidget(label);
 
     m_tasksList = new QListWidget(panel);
@@ -339,20 +344,27 @@ QWidget *MainWindow::buildTasksPanel()
 QWidget *MainWindow::buildChatPanel()
 {
     auto *panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("chatPanel"));
     auto *layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(12);
 
-    auto *label = new QLabel(QStringLiteral("Chat"), panel);
+    auto *label = new QLabel(QStringLiteral("Wan Chat"), panel);
+    label->setProperty("role", QStringLiteral("sectionTitle"));
     layout->addWidget(label);
 
     m_chatView = new QTextBrowser(panel);
+    m_chatView->setObjectName(QStringLiteral("chatView"));
     m_chatView->setReadOnly(true);
     layout->addWidget(m_chatView, 1);
 
-    auto *promptLabel = new QLabel(QStringLiteral("Prompt"), panel);
-    layout->addWidget(promptLabel);
+    auto *composerFrame = new QFrame(panel);
+    composerFrame->setObjectName(QStringLiteral("composerFrame"));
+    auto *composerLayout = new QVBoxLayout(composerFrame);
+    composerLayout->setContentsMargins(10, 8, 10, 8);
+    composerLayout->setSpacing(6);
 
-    m_inputImagePreview = new QFrame(panel);
+    m_inputImagePreview = new QFrame(composerFrame);
     m_inputImagePreview->setObjectName(QStringLiteral("inputImagePreview"));
     m_inputImagePreview->setVisible(false);
     auto *previewLayout = new QHBoxLayout(m_inputImagePreview);
@@ -373,24 +385,30 @@ QWidget *MainWindow::buildChatPanel()
 
     m_removeImageButton = new QPushButton(QStringLiteral("Remove"), m_inputImagePreview);
     previewLayout->addWidget(m_removeImageButton);
-    layout->addWidget(m_inputImagePreview);
 
-    m_promptEdit = new QPlainTextEdit(panel);
-    m_promptEdit->setPlaceholderText(QStringLiteral("Describe the video you want to generate..."));
+    composerLayout->addWidget(m_inputImagePreview);
+
+    m_promptEdit = new QPlainTextEdit(composerFrame);
+    m_promptEdit->setObjectName(QStringLiteral("promptEdit"));
+    m_promptEdit->setPlaceholderText(QStringLiteral("Message Wan..."));
     m_promptEdit->setTabChangesFocus(true);
     m_promptEdit->setMaximumBlockCount(200);
-    layout->addWidget(m_promptEdit);
+    m_promptEdit->setMinimumHeight(104);
+    composerLayout->addWidget(m_promptEdit);
 
     auto *sendRow = new QHBoxLayout();
     sendRow->setContentsMargins(0, 0, 0, 0);
-    m_addImageButton = new QPushButton(QStringLiteral("+"), panel);
+    m_addImageButton = new QPushButton(QStringLiteral("+"), composerFrame);
+    m_addImageButton->setObjectName(QStringLiteral("iconButton"));
     m_addImageButton->setToolTip(QStringLiteral("Add image"));
     m_addImageButton->setFixedWidth(40);
     sendRow->addWidget(m_addImageButton);
     sendRow->addStretch(1);
-    m_sendButton = new QPushButton(QStringLiteral("Send"), panel);
+    m_sendButton = new QPushButton(QStringLiteral("Send"), composerFrame);
+    m_sendButton->setObjectName(QStringLiteral("sendButton"));
     sendRow->addWidget(m_sendButton);
-    layout->addLayout(sendRow);
+    composerLayout->addLayout(sendRow);
+    layout->addWidget(composerFrame);
 
     auto *sendShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), panel);
     connect(sendShortcut, &QShortcut::activated, this, &MainWindow::sendPrompt);
@@ -401,10 +419,13 @@ QWidget *MainWindow::buildChatPanel()
 QWidget *MainWindow::buildConfigPanel()
 {
     auto *panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("sidePanel"));
     auto *layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setContentsMargins(10, 14, 14, 14);
+    layout->setSpacing(10);
 
     auto *configLabel = new QLabel(QStringLiteral("Configuration"), panel);
+    configLabel->setProperty("role", QStringLiteral("sectionTitle"));
     layout->addWidget(configLabel);
 
     auto *form = new QFormLayout();
@@ -443,6 +464,7 @@ QWidget *MainWindow::buildConfigPanel()
     layout->addLayout(form);
 
     auto *resultsLabel = new QLabel(QStringLiteral("Results"), panel);
+    resultsLabel->setProperty("role", QStringLiteral("sectionTitle"));
     layout->addWidget(resultsLabel);
 
     m_resultsTable = new QTableWidget(panel);
@@ -470,6 +492,7 @@ QWidget *MainWindow::buildConfigPanel()
     layout->addWidget(m_downloadSelectedButton);
 
     auto *videosLabel = new QLabel(QStringLiteral("Videos"), panel);
+    videosLabel->setProperty("role", QStringLiteral("sectionTitle"));
     layout->addWidget(videosLabel);
 
     m_videosTable = new QTableWidget(panel);
@@ -500,6 +523,7 @@ QWidget *MainWindow::buildConfigPanel()
     layout->addWidget(m_openOutputDirectoryButton);
 
     auto *diagnosticLabel = new QLabel(QStringLiteral("Diagnostics"), panel);
+    diagnosticLabel->setProperty("role", QStringLiteral("sectionTitle"));
     layout->addWidget(diagnosticLabel);
 
     m_diagnosticLog = new QPlainTextEdit(panel);
@@ -537,6 +561,177 @@ void MainWindow::connectSignals()
     connect(&m_apiClient, &ApiClient::resultsFetched, this, &MainWindow::onResultsFetched);
     connect(&m_apiClient, &ApiClient::resultDownloaded, this, &MainWindow::onResultDownloaded);
     connect(&m_apiClient, &ApiClient::requestFailed, this, &MainWindow::onRequestFailed);
+}
+
+void MainWindow::applyVisualStyle()
+{
+    setStyleSheet(QStringLiteral(R"(
+QMainWindow {
+    background: #f7f7f8;
+    color: #202123;
+    font-family: "Segoe UI", "Microsoft YaHei UI";
+    font-size: 13px;
+}
+QSplitter::handle {
+    background: #e5e5e5;
+}
+QWidget#sidePanel,
+QWidget#chatPanel {
+    background: #f7f7f8;
+}
+QLabel[role="sectionTitle"] {
+    color: #202123;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 2px 2px 4px 2px;
+}
+QTextBrowser#chatView,
+QListWidget,
+QTableWidget,
+QPlainTextEdit,
+QLineEdit,
+QComboBox {
+    background: #ffffff;
+    border: 1px solid #dedede;
+    border-radius: 8px;
+    color: #202123;
+    selection-background-color: #ececec;
+    selection-color: #202123;
+}
+QTextBrowser#chatView {
+    padding: 10px;
+}
+QListWidget {
+    padding: 2px;
+    outline: none;
+}
+QListWidget::item {
+    border: none;
+    margin: 0;
+}
+QListWidget::item:selected {
+    background: transparent;
+}
+QFrame#composerFrame {
+    background: #ffffff;
+    border: 1px solid #d9d9d9;
+    border-radius: 8px;
+}
+QPlainTextEdit#promptEdit {
+    border: none;
+    border-radius: 0;
+    padding: 4px;
+    background: transparent;
+}
+QFrame#inputImagePreview {
+    background: #f7f7f8;
+    border: 1px solid #e3e3e3;
+    border-radius: 8px;
+}
+QPushButton {
+    background: #ffffff;
+    border: 1px solid #d9d9d9;
+    border-radius: 8px;
+    padding: 6px 12px;
+    min-height: 28px;
+    color: #202123;
+}
+QPushButton:hover {
+    background: #f3f3f3;
+}
+QPushButton:pressed {
+    background: #e9e9e9;
+}
+QPushButton#sendButton {
+    background: #202123;
+    border-color: #202123;
+    color: #ffffff;
+    font-weight: 600;
+}
+QPushButton#sendButton:hover {
+    background: #343541;
+}
+QPushButton#iconButton {
+    min-width: 32px;
+    max-width: 32px;
+    padding: 4px 0;
+    font-size: 18px;
+    font-weight: 500;
+}
+QTableWidget {
+    gridline-color: #eeeeee;
+    alternate-background-color: #fafafa;
+}
+QHeaderView::section {
+    background: #f7f7f8;
+    border: none;
+    border-bottom: 1px solid #e5e5e5;
+    color: #6b6b6b;
+    padding: 6px;
+    font-weight: 600;
+}
+QFrame#taskCard {
+    background: #ffffff;
+    border: 1px solid #e1e1e1;
+    border-radius: 8px;
+}
+QFrame#taskCard:hover {
+    border-color: #cfcfcf;
+}
+QLabel#modePill,
+QLabel#statusPill {
+    border: 1px solid #e1e1e1;
+    border-radius: 8px;
+    padding: 3px 8px;
+    background: #f7f7f8;
+    color: #4a4a4a;
+    font-size: 12px;
+}
+QLabel#modePillI2V {
+    border: 1px solid #d7e7ff;
+    border-radius: 8px;
+    padding: 3px 8px;
+    background: #eef5ff;
+    color: #174f86;
+    font-size: 12px;
+}
+QLabel#taskMeta {
+    color: #6b6b6b;
+    font-size: 12px;
+}
+QLabel#taskThumbnail {
+    background: #f7f7f8;
+    border: 1px solid #e5e5e5;
+    border-radius: 8px;
+    color: #6b6b6b;
+    font-size: 11px;
+}
+QLabel#taskPrompt {
+    color: #202123;
+    font-size: 13px;
+}
+QLabel#taskError {
+    color: #a33a3a;
+    font-size: 12px;
+}
+QProgressBar {
+    background: #eeeeee;
+    border: none;
+    border-radius: 4px;
+    height: 8px;
+    text-align: center;
+    color: #6b6b6b;
+    font-size: 11px;
+}
+QProgressBar::chunk {
+    background: #202123;
+    border-radius: 4px;
+}
+QStatusBar {
+    background: #f7f7f8;
+    color: #6b6b6b;
+}
+)"));
 }
 
 void MainWindow::applyServiceUrl()
@@ -1051,8 +1246,23 @@ void MainWindow::onRequestFailed(const RequestFailure &failure)
 void MainWindow::appendChatMessage(const QString &role, const QString &message)
 {
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-    const QString html = QStringLiteral("<p><b>[%1] %2</b><br/>%3</p>")
-                             .arg(stamp, htmlEscapeAndBreaks(role), htmlEscapeAndBreaks(message));
+    const bool isUser = role.compare(QStringLiteral("User"), Qt::CaseInsensitive) == 0;
+    const QString align = isUser ? QStringLiteral("right") : QStringLiteral("left");
+    const QString background = isUser ? QStringLiteral("#f3f3f3") : QStringLiteral("#ffffff");
+    const QString border = isUser ? QStringLiteral("#e2e2e2") : QStringLiteral("#ffffff");
+    const QString html = QStringLiteral(
+                             "<div style=\"margin:10px 0;\" align=\"%1\">"
+                             "<table cellspacing=\"0\" cellpadding=\"0\" style=\"background:%2; border:1px solid %3; border-radius:8px;\">"
+                             "<tr><td style=\"padding:8px 10px;\">"
+                             "<span style=\"font-size:11px; color:#777777;\">%4 · %5</span><br/>"
+                             "<span style=\"font-size:14px; color:#202123;\">%6</span>"
+                             "</td></tr></table></div>")
+                             .arg(align,
+                                  background,
+                                  border,
+                                  htmlEscapeAndBreaks(stamp),
+                                  htmlEscapeAndBreaks(role),
+                                  htmlEscapeAndBreaks(message));
     m_chatView->append(html);
     m_chatView->moveCursor(QTextCursor::End);
 }
@@ -1143,6 +1353,7 @@ void MainWindow::refreshTasksTable()
 QWidget *MainWindow::buildTaskCard(const TaskModels::TaskDetail &task)
 {
     auto *card = new QFrame(m_tasksList);
+    card->setObjectName(QStringLiteral("taskCard"));
     card->setFrameShape(QFrame::StyledPanel);
     card->setLineWidth(1);
     auto *layout = new QHBoxLayout(card);
@@ -1156,6 +1367,7 @@ QWidget *MainWindow::buildTaskCard(const TaskModels::TaskDetail &task)
         || !referenceImagePath.isEmpty();
     if (shouldShowReference) {
         auto *thumbnail = new QLabel(card);
+        thumbnail->setObjectName(QStringLiteral("taskThumbnail"));
         thumbnail->setFixedSize(84, 84);
         thumbnail->setAlignment(Qt::AlignCenter);
         thumbnail->setFrameShape(QFrame::StyledPanel);
@@ -1176,20 +1388,25 @@ QWidget *MainWindow::buildTaskCard(const TaskModels::TaskDetail &task)
 
     auto *topRow = new QHBoxLayout();
     auto *modeLabel = new QLabel(taskModeLabel(task), card);
-    modeLabel->setFrameShape(QFrame::StyledPanel);
+    modeLabel->setObjectName(normalizedTaskMode(task) == QStringLiteral("i2v")
+                                 ? QStringLiteral("modePillI2V")
+                                 : QStringLiteral("modePill"));
     modeLabel->setMargin(4);
     topRow->addWidget(modeLabel);
 
     auto *statusLabel = new QLabel(task.status, card);
-    statusLabel->setFrameShape(QFrame::StyledPanel);
+    statusLabel->setObjectName(QStringLiteral("statusPill"));
     statusLabel->setMargin(4);
     statusLabel->setToolTip(formatRuntimeSummary(task));
     topRow->addWidget(statusLabel);
     topRow->addStretch(1);
-    topRow->addWidget(new QLabel(formatTimestamp(task.updateTime, task.updateTimeRaw), card));
+    auto *updatedLabel = new QLabel(formatTimestamp(task.updateTime, task.updateTimeRaw), card);
+    updatedLabel->setObjectName(QStringLiteral("taskMeta"));
+    topRow->addWidget(updatedLabel);
     content->addLayout(topRow);
 
     auto *promptLabel = new QLabel(task.prompt, card);
+    promptLabel->setObjectName(QStringLiteral("taskPrompt"));
     promptLabel->setWordWrap(true);
     promptLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     promptLabel->setToolTip(task.prompt);
@@ -1205,12 +1422,14 @@ QWidget *MainWindow::buildTaskCard(const TaskModels::TaskDetail &task)
     const QString details = QStringLiteral("%1 | %2 | task_id=%3")
                                 .arg(formatStageText(task), task.size.isEmpty() ? QStringLiteral("-") : task.size, task.taskId);
     auto *detailsLabel = new QLabel(details, card);
+    detailsLabel->setObjectName(QStringLiteral("taskMeta"));
     detailsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     detailsLabel->setToolTip(task.taskId);
     content->addWidget(detailsLabel);
 
     if (!task.errorMessage.isEmpty()) {
         auto *errorLabel = new QLabel(task.errorMessage, card);
+        errorLabel->setObjectName(QStringLiteral("taskError"));
         errorLabel->setWordWrap(true);
         errorLabel->setToolTip(task.errorMessage);
         content->addWidget(errorLabel);

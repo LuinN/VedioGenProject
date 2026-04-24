@@ -99,6 +99,7 @@ private:
     QWidget *buildChatPanel();
     QWidget *buildConfigPanel();
     void connectSignals();
+    void applyVisualStyle();
 
     void appendChatMessage(const QString &role, const QString &message);
     void appendDiagnostic(const QString &message);

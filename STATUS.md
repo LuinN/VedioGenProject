@@ -117,6 +117,18 @@
 
 2026-04-24：
 
+- Windows Qt 客户端已做一轮简约化 UI 调整，使整体更接近 ChatGPT 风格：
+  - 三栏背景改为浅灰，主体控件使用白底、细边框和 8px 内圆角
+  - 中间聊天区改为更轻量的消息气泡样式
+  - 输入区改为 composer 样式，图片 `+` 按钮和 `Send` 按钮收在同一输入容器内
+  - 左侧任务卡片统一为白底细边框，模式/状态使用轻量 pill 标签
+  - Results / Videos / Diagnostics 保持功能不变，仅统一表格和按钮样式
+  - 本轮没有修改服务端，也没有改变任何 HTTP 协议
+- Windows 原生客户端 UI 调整后验证：
+  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
+  - `git diff --check` 通过，仅 CRLF 提示
+  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`
+
 - Windows Qt 客户端已接入图片 + prompt 的 `i2v` 提交入口：
   - 聊天输入区新增 `+` 添加图片按钮
   - 选择图片后显示预览块，可删除
