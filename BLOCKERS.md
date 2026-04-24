@@ -2,6 +2,31 @@
 
 ## 当前真实阻塞
 
+### 新增：任务删除当前是 Windows 客户端本地删除，不是服务端删除
+
+当前真实协议状态：
+
+- 服务端现有协议没有 `DELETE /api/tasks/{task_id}`
+- 本轮按 Windows 客户端职责边界没有修改服务端
+
+客户端当前行为：
+
+- Tasks 区删除任务会：
+  - 从客户端任务列表移除该 task
+  - 清理本地任务 metadata、输入图缓存、缩略图和预览缓存
+  - 写入 `QStandardPaths::AppDataLocation/deleted_tasks.json`
+  - 后续 `/api/tasks` 和 `/api/results` 再返回同一 `task_id` 时继续隐藏
+- Tasks 区删除任务不会：
+  - 取消服务端正在运行的推理
+  - 删除服务端任务历史或输出文件
+  - 删除 Videos 页面里的本地 mp4
+- 本地 mp4 只能在 Videos 弹窗中通过 `Delete Selected` 删除
+
+影响：
+
+- 已满足当前“客户端不删视频、视频只在 Videos 页面删除”的边界
+- 如果后续需要真正取消运行中任务或清理服务端任务历史，需要服务端新增明确的删除/取消 API
+
 ### 新增：Windows 客户端已实现 multipart i2v，但当前运行中的服务端进程仍按旧 JSON-only 协议响应
 
 当前客户端完成状态：

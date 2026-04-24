@@ -85,9 +85,11 @@ private slots:
     void chooseInputImage();
     void removeInputImage();
     void chooseDownloadDirectory();
+    void deleteSelectedTask();
     void downloadSelectedResult();
     void openSelectedOutputDirectory();
     void playSelectedVideo();
+    void deleteSelectedVideo();
 
     void onHealthChecked(const TaskModels::HealthResponse &health);
     void onTaskCreated(const TaskModels::TaskSummary &task);
@@ -143,6 +145,10 @@ private:
     void loadDownloadedVideos();
     void saveDownloadedVideos();
     QString videoIndexPath() const;
+    void loadDeletedTasks();
+    void saveDeletedTasks();
+    QString deletedTasksIndexPath() const;
+    bool isDeletedTask(const QString &taskId) const;
     void loadTaskMetadata();
     void saveTaskMetadata(const TaskLocalMetadata &metadata);
     bool restoreTaskMetadataFromFile(const QString &metadataPath);
@@ -171,6 +177,8 @@ private:
     void startNextThumbnailGeneration();
     void finishThumbnailGeneration(bool success, const QString &details);
     void playTaskVideo(const QString &taskId);
+    bool deleteTaskLocalData(const QString &taskId, QString *error = nullptr);
+    bool removeTaskCacheDirectory(const QString &taskId, QStringList *preservedVideos = nullptr, QString *error = nullptr);
     QString configuredDownloadDirectory() const;
     bool ensureDownloadDirectory(QString &directory);
     bool startResultDownloadForTask(const TaskModels::TaskDetail &task, const QString &reason);
@@ -190,6 +198,7 @@ private:
     QHash<QString, DownloadedVideo> m_downloadedVideos;
     QHash<QString, TaskLocalMetadata> m_taskMetadata;
     QHash<QString, InputImageAttachment> m_pendingImageRequests;
+    QSet<QString> m_deletedTaskIds;
     QSet<QString> m_activeTaskIds;
     QSet<QString> m_inFlightTaskIds;
     QSet<QString> m_downloadInFlightTaskIds;
@@ -224,10 +233,12 @@ private:
     QPushButton *m_diagnosticsButton = nullptr;
     QPushButton *m_addImageButton = nullptr;
     QPushButton *m_removeImageButton = nullptr;
+    QPushButton *m_deleteTaskButton = nullptr;
     QPushButton *m_chooseDownloadDirectoryButton = nullptr;
     QPushButton *m_downloadSelectedButton = nullptr;
     QPushButton *m_openOutputDirectoryButton = nullptr;
     QPushButton *m_playVideoButton = nullptr;
+    QPushButton *m_deleteVideoButton = nullptr;
     QTextBrowser *m_chatView = nullptr;
     QPlainTextEdit *m_promptEdit = nullptr;
     QWidget *m_inputImagePreview = nullptr;

@@ -6,6 +6,7 @@
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
+#include <QDirIterator>
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
@@ -19,11 +20,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMediaPlayer>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QProgressBar>
 #include <QProcess>
@@ -58,6 +61,7 @@ constexpr auto kAlternateSize = "704*1280";
 constexpr auto kDefaultDistro = "Ubuntu-24.04";
 constexpr auto kDownloadDirectorySetting = "downloads/directory";
 constexpr auto kVideoIndexFileName = "downloaded_videos.json";
+constexpr auto kDeletedTasksFileName = "deleted_tasks.json";
 constexpr auto kTaskMetadataFileName = "metadata.json";
 constexpr auto kPreviewVideoFileName = "result.mp4";
 constexpr auto kThumbnailFileName = "thumbnail.png";
@@ -203,6 +207,24 @@ QString cleanUuid()
     return value;
 }
 
+QString normalizedAbsolutePath(const QString &path)
+{
+    return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+}
+
+bool pathIsAtOrUnderDirectory(const QString &path, const QString &directory)
+{
+    const QString normalizedPath = normalizedAbsolutePath(path);
+    QString normalizedDirectory = normalizedAbsolutePath(directory);
+    if (normalizedPath.compare(normalizedDirectory, Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    if (!normalizedDirectory.endsWith(QLatin1Char('/'))) {
+        normalizedDirectory.append(QLatin1Char('/'));
+    }
+    return normalizedPath.startsWith(normalizedDirectory, Qt::CaseInsensitive);
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -339,9 +361,22 @@ QWidget *MainWindow::buildTasksPanel()
     layout->setContentsMargins(14, 14, 10, 14);
     layout->setSpacing(10);
 
+    auto *header = new QHBoxLayout();
+    header->setContentsMargins(0, 0, 0, 0);
+    header->setSpacing(8);
+
     auto *label = new QLabel(QStringLiteral("Tasks"), panel);
     label->setProperty("role", QStringLiteral("sectionTitle"));
-    layout->addWidget(label);
+    header->addWidget(label);
+    header->addStretch(1);
+
+    m_deleteTaskButton = new QPushButton(QStringLiteral("Delete"), panel);
+    m_deleteTaskButton->setObjectName(QStringLiteral("toolbarButton"));
+    m_deleteTaskButton->setToolTip(QStringLiteral("Delete selected task data. Downloaded videos are kept."));
+    m_deleteTaskButton->setEnabled(false);
+    header->addWidget(m_deleteTaskButton);
+
+    layout->addLayout(header);
 
     m_tasksList = new QListWidget(panel);
     m_tasksList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -534,8 +569,22 @@ QWidget *MainWindow::buildVideosPanel()
     m_videosTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     layout->addWidget(m_videosTable, 1);
 
+    auto *videoActions = new QHBoxLayout();
+    videoActions->setContentsMargins(0, 0, 0, 0);
+    videoActions->setSpacing(8);
+    videoActions->addStretch(1);
+
     m_playVideoButton = new QPushButton(QStringLiteral("Play Selected"), panel);
-    layout->addWidget(m_playVideoButton);
+    m_playVideoButton->setEnabled(false);
+    videoActions->addWidget(m_playVideoButton);
+
+    m_deleteVideoButton = new QPushButton(QStringLiteral("Delete Selected"), panel);
+    m_deleteVideoButton->setObjectName(QStringLiteral("dangerButton"));
+    m_deleteVideoButton->setToolTip(QStringLiteral("Delete the selected local video file and remove it from Videos."));
+    m_deleteVideoButton->setEnabled(false);
+    videoActions->addWidget(m_deleteVideoButton);
+
+    layout->addLayout(videoActions);
 
     return panel;
 }
@@ -614,11 +663,27 @@ void MainWindow::connectSignals()
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::sendPrompt);
     connect(m_addImageButton, &QPushButton::clicked, this, &MainWindow::chooseInputImage);
     connect(m_removeImageButton, &QPushButton::clicked, this, &MainWindow::removeInputImage);
+    connect(m_deleteTaskButton, &QPushButton::clicked, this, &MainWindow::deleteSelectedTask);
     connect(m_chooseDownloadDirectoryButton, &QPushButton::clicked, this, &MainWindow::chooseDownloadDirectory);
     connect(m_playVideoButton, &QPushButton::clicked, this, &MainWindow::playSelectedVideo);
+    connect(m_deleteVideoButton, &QPushButton::clicked, this, &MainWindow::deleteSelectedVideo);
     connect(m_pollTimer, &QTimer::timeout, this, &MainWindow::pollActiveTasks);
-    connect(m_tasksList, &QListWidget::itemSelectionChanged, this, &MainWindow::updateOutputDirectoryField);
+    connect(m_tasksList, &QListWidget::itemSelectionChanged, this, [this]() {
+        updateOutputDirectoryField();
+        if (m_deleteTaskButton != nullptr) {
+            m_deleteTaskButton->setEnabled(!selectedTaskId().isEmpty());
+        }
+    });
     connect(m_resultsTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::updateOutputDirectoryField);
+    connect(m_videosTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+        const bool hasSelection = !selectedVideoTaskId().isEmpty();
+        if (m_playVideoButton != nullptr) {
+            m_playVideoButton->setEnabled(hasSelection);
+        }
+        if (m_deleteVideoButton != nullptr) {
+            m_deleteVideoButton->setEnabled(hasSelection);
+        }
+    });
     connect(m_videosTable, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *) {
         playSelectedVideo();
     });
@@ -631,6 +696,9 @@ void MainWindow::connectSignals()
     connect(&m_apiClient, &ApiClient::resultsFetched, this, &MainWindow::onResultsFetched);
     connect(&m_apiClient, &ApiClient::resultDownloaded, this, &MainWindow::onResultDownloaded);
     connect(&m_apiClient, &ApiClient::requestFailed, this, &MainWindow::onRequestFailed);
+
+    auto *deleteTaskShortcut = new QShortcut(QKeySequence::Delete, m_tasksList);
+    connect(deleteTaskShortcut, &QShortcut::activated, this, &MainWindow::deleteSelectedTask);
 }
 
 void MainWindow::applyVisualStyle()
@@ -713,6 +781,11 @@ QPushButton:hover {
 QPushButton:pressed {
     background: #e9e9e9;
 }
+QPushButton:disabled {
+    color: #a0a0a0;
+    background: #f5f5f5;
+    border-color: #e6e6e6;
+}
 QPushButton#sendButton {
     background: #202123;
     border-color: #202123;
@@ -738,6 +811,14 @@ QPushButton#toolbarButton {
 QPushButton#toolbarButton:hover {
     background: #ececec;
     border-color: #ececec;
+}
+QPushButton#dangerButton {
+    color: #8f1f1f;
+    border-color: #ead0d0;
+}
+QPushButton#dangerButton:hover {
+    background: #fff1f1;
+    border-color: #e3b5b5;
 }
 QTableWidget {
     gridline-color: #eeeeee;
@@ -906,6 +987,11 @@ void MainWindow::pollActiveTasks()
 {
     const auto taskIds = m_activeTaskIds.values();
     for (const QString &taskId : taskIds) {
+        if (isDeletedTask(taskId)) {
+            m_activeTaskIds.remove(taskId);
+            m_inFlightTaskIds.remove(taskId);
+            continue;
+        }
         if (m_inFlightTaskIds.contains(taskId)) {
             continue;
         }
@@ -1028,6 +1114,57 @@ void MainWindow::chooseDownloadDirectory()
     showUserNotice(QStringLiteral("Download directory updated."));
 }
 
+void MainWindow::deleteSelectedTask()
+{
+    const QString taskId = selectedTaskId();
+    if (taskId.isEmpty() || !m_tasks.contains(taskId)) {
+        const QString message = QStringLiteral("Select a task to delete first.");
+        appendDiagnostic(message);
+        showUserNotice(message);
+        return;
+    }
+
+    const TaskModels::TaskDetail task = m_tasks.value(taskId);
+    const QString prompt = task.prompt.simplified();
+    const QString confirmText = QStringLiteral(
+        "Delete this task from the client?\n\n"
+        "Task ID: %1\n"
+        "%2\n\n"
+        "This removes local task metadata, input image cache, preview video cache, and thumbnails.\n"
+        "Downloaded videos are kept and can only be deleted from Videos.")
+                                    .arg(taskId, prompt.isEmpty() ? QString() : QStringLiteral("Prompt: %1").arg(prompt.left(160)));
+
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this,
+        QStringLiteral("Delete Task"),
+        confirmText,
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    QString error;
+    if (!deleteTaskLocalData(taskId, &error)) {
+        const QString message = QStringLiteral("Failed to delete task data: %1").arg(error);
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        return;
+    }
+
+    m_deletedTaskIds.insert(taskId);
+    saveDeletedTasks();
+    refreshTasksTable();
+    refreshResultsTable();
+    updateOutputDirectoryField();
+
+    const QString message = QStringLiteral("Deleted task %1. Downloaded videos were kept.").arg(taskId);
+    appendDiagnostic(message);
+    appendChatMessage(QStringLiteral("System"), message);
+    showUserNotice(QStringLiteral("Task deleted."));
+}
+
 void MainWindow::downloadSelectedResult()
 {
     const QString taskId = selectedResultTaskId();
@@ -1107,6 +1244,52 @@ void MainWindow::playSelectedVideo()
     showUserNotice(QStringLiteral("Opened video."));
 }
 
+void MainWindow::deleteSelectedVideo()
+{
+    const QString taskId = selectedVideoTaskId();
+    if (taskId.isEmpty() || !m_downloadedVideos.contains(taskId)) {
+        const QString message = QStringLiteral("Select a downloaded video first.");
+        appendDiagnostic(message);
+        showUserNotice(message);
+        return;
+    }
+
+    const DownloadedVideo video = m_downloadedVideos.value(taskId);
+    const QString confirmText = QStringLiteral(
+        "Delete this local video?\n\n"
+        "Task ID: %1\n"
+        "File: %2\n\n"
+        "This removes the mp4 file and the Videos index entry. The task history is kept.")
+                                    .arg(taskId, video.localPath);
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this,
+        QStringLiteral("Delete Video"),
+        confirmText,
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    if (QFileInfo::exists(video.localPath) && !QFile::remove(video.localPath)) {
+        const QString message = QStringLiteral("Failed to delete local video file: %1").arg(video.localPath);
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        return;
+    }
+
+    m_downloadedVideos.remove(taskId);
+    saveDownloadedVideos();
+    refreshVideosTable();
+    refreshTasksTable();
+
+    const QString message = QStringLiteral("Deleted local video for task %1: %2").arg(taskId, video.localPath);
+    appendDiagnostic(message);
+    appendChatMessage(QStringLiteral("System"), message);
+    showUserNotice(QStringLiteral("Video deleted."));
+}
+
 void MainWindow::onHealthChecked(const TaskModels::HealthResponse &health)
 {
     const QString message = QStringLiteral("Connected to service '%1' at %2")
@@ -1117,6 +1300,10 @@ void MainWindow::onHealthChecked(const TaskModels::HealthResponse &health)
 
 void MainWindow::onTaskCreated(const TaskModels::TaskSummary &task)
 {
+    if (isDeletedTask(task.taskId)) {
+        return;
+    }
+
     if (!task.clientRequestId.isEmpty() && m_pendingImageRequests.contains(task.clientRequestId)) {
         TaskLocalMetadata metadata;
         QString error;
@@ -1166,6 +1353,11 @@ void MainWindow::onTaskCreated(const TaskModels::TaskSummary &task)
 void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
 {
     m_inFlightTaskIds.remove(task.taskId);
+    if (isDeletedTask(task.taskId)) {
+        m_activeTaskIds.remove(task.taskId);
+        stopPollingIfIdle();
+        return;
+    }
 
     const TaskModels::TaskDetail previous = m_tasks.value(task.taskId);
     const bool hadPrevious = m_tasks.contains(task.taskId);
@@ -1250,7 +1442,14 @@ void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
 
 void MainWindow::onTasksFetched(const TaskModels::TaskListResponse &tasks)
 {
+    int visibleCount = 0;
     for (const TaskModels::TaskSummary &task : tasks.items) {
+        if (isDeletedTask(task.taskId)) {
+            m_activeTaskIds.remove(task.taskId);
+            m_inFlightTaskIds.remove(task.taskId);
+            continue;
+        }
+        ++visibleCount;
         syncTaskSummary(task);
         if (isTerminalStatus(task.status)) {
             m_activeTaskIds.remove(task.taskId);
@@ -1262,13 +1461,20 @@ void MainWindow::onTasksFetched(const TaskModels::TaskListResponse &tasks)
 
     refreshTasksTable();
     startPollingIfNeeded();
-    appendDiagnostic(QStringLiteral("Loaded %1 task item(s).").arg(tasks.items.size()));
+    appendDiagnostic(QStringLiteral("Loaded %1 task item(s), %2 hidden by local deletion.")
+                         .arg(visibleCount)
+                         .arg(tasks.items.size() - visibleCount));
 }
 
 void MainWindow::onResultsFetched(const TaskModels::ResultListResponse &results)
 {
     m_results.clear();
+    int visibleCount = 0;
     for (const TaskModels::ResultItem &result : results.items) {
+        if (isDeletedTask(result.taskId)) {
+            continue;
+        }
+        ++visibleCount;
         syncResultItem(result);
     }
 
@@ -1277,7 +1483,9 @@ void MainWindow::onResultsFetched(const TaskModels::ResultListResponse &results)
         ensureTaskResultPreview(task);
     }
     refreshTasksTable();
-    appendDiagnostic(QStringLiteral("Loaded %1 result item(s).").arg(results.items.size()));
+    appendDiagnostic(QStringLiteral("Loaded %1 result item(s), %2 hidden by local task deletion.")
+                         .arg(visibleCount)
+                         .arg(results.items.size() - visibleCount));
 }
 
 void MainWindow::onResultDownloaded(const ResultDownload &download)
@@ -1286,6 +1494,12 @@ void MainWindow::onResultDownloaded(const ResultDownload &download)
 
     if (download.purpose == QString::fromLatin1(kDownloadPurposePreview)) {
         m_previewDownloadInFlightTaskIds.remove(download.taskId);
+        if (isDeletedTask(download.taskId)) {
+            QFile::remove(download.localPath);
+            appendDiagnostic(QStringLiteral("Discarded preview video for deleted task %1: %2")
+                                 .arg(download.taskId, download.localPath));
+            return;
+        }
         appendDiagnostic(QStringLiteral("Downloaded preview video %1 to %2 (%3)")
                              .arg(download.taskId, download.localPath, formatFileSize(download.fileSize)));
         enqueueThumbnailGeneration(download.taskId);
@@ -1489,6 +1703,9 @@ void MainWindow::refreshTasksTable()
 
     m_tasksList->clear();
     for (const TaskModels::TaskDetail &task : tasks) {
+        if (isDeletedTask(task.taskId)) {
+            continue;
+        }
         auto *item = new QListWidgetItem();
         item->setData(Qt::UserRole, task.taskId);
         item->setToolTip(formatRuntimeSummary(task));
@@ -1508,6 +1725,9 @@ void MainWindow::refreshTasksTable()
                 break;
             }
         }
+    }
+    if (m_deleteTaskButton != nullptr) {
+        m_deleteTaskButton->setEnabled(!selectedTaskId().isEmpty());
     }
 }
 
@@ -1724,6 +1944,13 @@ void MainWindow::refreshVideosTable()
             }
         }
     }
+    const bool hasSelection = !selectedVideoTaskId().isEmpty();
+    if (m_playVideoButton != nullptr) {
+        m_playVideoButton->setEnabled(hasSelection);
+    }
+    if (m_deleteVideoButton != nullptr) {
+        m_deleteVideoButton->setEnabled(hasSelection);
+    }
 }
 
 void MainWindow::syncTaskSummary(const TaskModels::TaskSummary &task)
@@ -1733,6 +1960,9 @@ void MainWindow::syncTaskSummary(const TaskModels::TaskSummary &task)
 
 void MainWindow::syncTaskDetail(const TaskModels::TaskDetail &task)
 {
+    if (isDeletedTask(task.taskId)) {
+        return;
+    }
     m_tasks.insert(task.taskId, task);
     if (!task.taskId.isEmpty()
         && (normalizedTaskMode(task) == QStringLiteral("i2v") || !task.inputImagePath.isEmpty() || task.inputImageExists)
@@ -1752,6 +1982,9 @@ void MainWindow::syncTaskDetail(const TaskModels::TaskDetail &task)
 
 void MainWindow::syncResultItem(const TaskModels::ResultItem &result)
 {
+    if (isDeletedTask(result.taskId)) {
+        return;
+    }
     m_results.insert(result.taskId, result);
     updateOutputDirectoryField();
 }
@@ -1859,6 +2092,7 @@ void MainWindow::loadPersistentState()
     }
 
     loadDownloadedVideos();
+    loadDeletedTasks();
     loadTaskMetadata();
     refreshVideosTable();
 }
@@ -1953,6 +2187,84 @@ QString MainWindow::videoIndexPath() const
     return QDir(root).filePath(QString::fromLatin1(kVideoIndexFileName));
 }
 
+void MainWindow::loadDeletedTasks()
+{
+    m_deletedTaskIds.clear();
+
+    QFile file(deletedTasksIndexPath());
+    if (!file.exists()) {
+        return;
+    }
+    if (!file.open(QIODevice::ReadOnly)) {
+        appendDiagnostic(QStringLiteral("Failed to open deleted task index: %1").arg(file.errorString()));
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        appendDiagnostic(QStringLiteral("Failed to parse deleted task index: %1").arg(parseError.errorString()));
+        return;
+    }
+
+    const QJsonArray items = document.object().value(QStringLiteral("tasks")).toArray();
+    for (const QJsonValue &value : items) {
+        QString taskId;
+        if (value.isString()) {
+            taskId = value.toString();
+        } else if (value.isObject()) {
+            taskId = value.toObject().value(QStringLiteral("task_id")).toString();
+        }
+        if (!taskId.trimmed().isEmpty()) {
+            m_deletedTaskIds.insert(taskId.trimmed());
+        }
+    }
+    appendDiagnostic(QStringLiteral("Loaded %1 deleted task marker(s).").arg(m_deletedTaskIds.size()));
+}
+
+void MainWindow::saveDeletedTasks()
+{
+    QStringList taskIds = m_deletedTaskIds.values();
+    taskIds.sort(Qt::CaseInsensitive);
+
+    QJsonArray tasks;
+    for (const QString &taskId : taskIds) {
+        tasks.append(QJsonObject{
+            {QStringLiteral("task_id"), taskId},
+        });
+    }
+
+    const QString indexPath = deletedTasksIndexPath();
+    QSaveFile file(indexPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        appendDiagnostic(QStringLiteral("Failed to open deleted task index for writing: %1 | path=%2")
+                             .arg(file.errorString(), indexPath));
+        return;
+    }
+    file.write(QJsonDocument(QJsonObject{{QStringLiteral("tasks"), tasks}}).toJson(QJsonDocument::Indented));
+    if (!file.commit()) {
+        appendDiagnostic(QStringLiteral("Failed to write deleted task index: %1 | path=%2")
+                             .arg(file.errorString(), indexPath));
+        return;
+    }
+    appendDiagnostic(QStringLiteral("Saved deleted task index: %1").arg(indexPath));
+}
+
+QString MainWindow::deletedTasksIndexPath() const
+{
+    QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (root.isEmpty()) {
+        root = QCoreApplication::applicationDirPath();
+    }
+    QDir().mkpath(root);
+    return QDir(root).filePath(QString::fromLatin1(kDeletedTasksFileName));
+}
+
+bool MainWindow::isDeletedTask(const QString &taskId) const
+{
+    return m_deletedTaskIds.contains(taskId.trimmed());
+}
+
 void MainWindow::loadTaskMetadata()
 {
     m_taskMetadata.clear();
@@ -2032,6 +2344,9 @@ bool MainWindow::restoreTaskMetadataFromFile(const QString &metadataPath)
     metadata.createTime = TaskModels::parseTimestamp(metadata.createTimeRaw);
     if (metadata.taskId.isEmpty()) {
         appendDiagnostic(QStringLiteral("Ignored task metadata without task_id: %1").arg(metadataPath));
+        return false;
+    }
+    if (isDeletedTask(metadata.taskId)) {
         return false;
     }
 
@@ -2369,7 +2684,7 @@ QString MainWindow::localVideoPathForPreview(const QString &taskId) const
 
 void MainWindow::ensureTaskResultPreview(const TaskModels::TaskDetail &task)
 {
-    if (task.status != QStringLiteral("succeeded") || task.taskId.isEmpty()) {
+    if (task.status != QStringLiteral("succeeded") || task.taskId.isEmpty() || isDeletedTask(task.taskId)) {
         return;
     }
     if (isTaskThumbnailCurrent(task.taskId)
@@ -2393,6 +2708,7 @@ void MainWindow::ensureTaskResultPreview(const TaskModels::TaskDetail &task)
 bool MainWindow::startPreviewDownloadForTask(const TaskModels::TaskDetail &task, const QString &reason)
 {
     if (task.taskId.isEmpty()
+        || isDeletedTask(task.taskId)
         || m_previewDownloadInFlightTaskIds.contains(task.taskId)
         || m_downloadInFlightTaskIds.contains(task.taskId)) {
         return false;
@@ -2417,6 +2733,7 @@ bool MainWindow::startPreviewDownloadForTask(const TaskModels::TaskDetail &task,
 void MainWindow::enqueueThumbnailGeneration(const QString &taskId)
 {
     if (taskId.trimmed().isEmpty()
+        || isDeletedTask(taskId)
         || isTaskThumbnailCurrent(taskId)
         || m_thumbnailQueuedTaskIds.contains(taskId)
         || m_thumbnailInFlightTaskIds.contains(taskId)
@@ -2594,6 +2911,136 @@ void MainWindow::playTaskVideo(const QString &taskId)
 
     appendDiagnostic(QStringLiteral("Opened task video: %1").arg(videoPath));
     showUserNotice(QStringLiteral("Opened video."));
+}
+
+bool MainWindow::deleteTaskLocalData(const QString &taskId, QString *error)
+{
+    const QString trimmedTaskId = taskId.trimmed();
+    if (trimmedTaskId.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Task id is empty.");
+        }
+        return false;
+    }
+
+    QStringList preservedVideos;
+    if (!removeTaskCacheDirectory(trimmedTaskId, &preservedVideos, error)) {
+        return false;
+    }
+
+    m_tasks.remove(trimmedTaskId);
+    m_results.remove(trimmedTaskId);
+    m_taskMetadata.remove(trimmedTaskId);
+    m_activeTaskIds.remove(trimmedTaskId);
+    m_inFlightTaskIds.remove(trimmedTaskId);
+    m_previewDownloadInFlightTaskIds.remove(trimmedTaskId);
+    m_thumbnailQueuedTaskIds.remove(trimmedTaskId);
+    m_thumbnailInFlightTaskIds.remove(trimmedTaskId);
+    m_thumbnailFailedTaskIds.remove(trimmedTaskId);
+    m_thumbnailQueue.removeAll(trimmedTaskId);
+    stopPollingIfIdle();
+
+    if (!preservedVideos.isEmpty()) {
+        appendDiagnostic(QStringLiteral("Preserved %1 downloaded video file(s) while deleting task %2.")
+                             .arg(preservedVideos.size())
+                             .arg(trimmedTaskId));
+    }
+
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
+}
+
+bool MainWindow::removeTaskCacheDirectory(const QString &taskId, QStringList *preservedVideos, QString *error)
+{
+    const QString cacheDirectory = taskCacheDirectory(taskId);
+    const QFileInfo cacheInfo(cacheDirectory);
+    if (!cacheInfo.exists()) {
+        if (error != nullptr) {
+            error->clear();
+        }
+        return true;
+    }
+    if (!cacheInfo.isDir()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Task cache path is not a directory: %1").arg(cacheDirectory);
+        }
+        return false;
+    }
+
+    const QString root = normalizedAbsolutePath(tasksCacheRoot());
+    const QString target = normalizedAbsolutePath(cacheDirectory);
+    if (target.compare(root, Qt::CaseInsensitive) == 0 || !pathIsAtOrUnderDirectory(target, root)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Refusing to delete path outside task cache root: %1").arg(target);
+        }
+        return false;
+    }
+
+    QSet<QString> preservedVideoPaths;
+    for (const DownloadedVideo &video : std::as_const(m_downloadedVideos)) {
+        if (video.localPath.trimmed().isEmpty()) {
+            continue;
+        }
+        const QString videoPath = normalizedAbsolutePath(video.localPath);
+        if (pathIsAtOrUnderDirectory(videoPath, target)) {
+            preservedVideoPaths.insert(videoPath);
+        }
+    }
+
+    if (preservedVideoPaths.isEmpty()) {
+        if (!QDir(cacheDirectory).removeRecursively()) {
+            if (error != nullptr) {
+                *error = QStringLiteral("Failed to remove task cache directory: %1").arg(cacheDirectory);
+            }
+            return false;
+        }
+        if (error != nullptr) {
+            error->clear();
+        }
+        return true;
+    }
+
+    QStringList directories;
+    QDirIterator iterator(
+        cacheDirectory,
+        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+        QDirIterator::Subdirectories);
+    while (iterator.hasNext()) {
+        iterator.next();
+        const QFileInfo entry = iterator.fileInfo();
+        const QString entryPath = normalizedAbsolutePath(entry.absoluteFilePath());
+        if (entry.isDir()) {
+            directories.append(entry.absoluteFilePath());
+            continue;
+        }
+        if (preservedVideoPaths.contains(entryPath)) {
+            if (preservedVideos != nullptr) {
+                preservedVideos->append(entry.absoluteFilePath());
+            }
+            continue;
+        }
+        if (!QFile::remove(entry.absoluteFilePath())) {
+            if (error != nullptr) {
+                *error = QStringLiteral("Failed to remove task cache file: %1").arg(entry.absoluteFilePath());
+            }
+            return false;
+        }
+    }
+
+    std::sort(directories.begin(), directories.end(), [](const QString &left, const QString &right) {
+        return left.size() > right.size();
+    });
+    for (const QString &directory : directories) {
+        QDir().rmdir(directory);
+    }
+    QDir().rmdir(cacheDirectory);
+
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
 }
 
 QString MainWindow::configuredDownloadDirectory() const

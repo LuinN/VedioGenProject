@@ -91,6 +91,10 @@
 - 已支持统一下载目录，目录配置写入 `QSettings`
 - 已支持本地 Videos 列表，下载索引持久化到 `QStandardPaths::AppDataLocation/downloaded_videos.json`
 - 已支持双击视频或点击 `Play Selected` 调用 Windows 默认播放器
+- 已支持在 Videos 弹窗中删除本地视频：
+  - `Delete Selected` 会删除对应 Windows 本地 mp4
+  - 同步移除 `downloaded_videos.json` 中的索引项
+  - 不删除任务历史
 - 已支持完成任务卡片显示结果视频首帧截图：
   - 缩略图缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/thumbnail.png`
   - 缩略图版本标记缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/thumbnail.version`
@@ -99,6 +103,12 @@
   - 缺少本地 mp4 时会按需后台下载到任务缓存目录
   - 双击任务卡片中的结果截图可调用 Windows 默认播放器
   - 已修复旧缩略图生成链路可能复用同一帧画面的问题：现在每个任务使用独立解码器、旧缓存按版本失效并重建
+- 已支持客户端本地删除任务：
+  - 左侧 Tasks 顶部 `Delete` 按钮与键盘 `Delete` 可删除选中任务
+  - 删除任务会移除本地任务状态、结果映射、任务 metadata、输入图缓存、缩略图和预览缓存
+  - 删除任务不会删除 Videos 页面中的本地 mp4，也不会移除 `downloaded_videos.json`
+  - 已删除任务 ID 持久化到 `QStandardPaths::AppDataLocation/deleted_tasks.json`
+  - 后续 `/api/tasks` 与 `/api/results` 拉回同一 task_id 时，客户端会继续隐藏该任务
 - 已接入输入区单图附件：
   - 支持 `png` / `jpg` / `jpeg` / `webp`
   - 选择后会显示缩略图、文件名和删除按钮
@@ -125,6 +135,16 @@
 ## 最近一次重要进展
 
 2026-04-25：
+
+- Windows Qt 客户端新增任务删除与视频删除边界：
+  - Tasks 区新增 `Delete`，支持删除选中任务的客户端本地任务数据
+  - 已删除任务写入 `deleted_tasks.json`，刷新服务端任务/结果列表时继续隐藏
+  - 删除任务不删除用户下载视频；如本地任务缓存目录内存在 Videos 索引指向的 mp4，会保留该文件
+  - Videos 弹窗新增 `Delete Selected`，只有这里会删除本地 mp4 并更新 `downloaded_videos.json`
+  - 服务端当前没有 `DELETE /api/tasks`，因此本轮任务删除不取消服务端推理，也不删除服务端历史记录
+- Windows 原生客户端构建与回归验证：
+  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
+  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`
 
 - Windows Qt 客户端修复完成任务缩略图串帧/旧缓存问题：
   - 根因：旧实现复用同一个 `QMediaPlayer + QVideoSink`，切换视频源时可能保存上一条媒体残留帧；同时旧 `thumbnail.png` 只按文件存在判断，不会自动重建
