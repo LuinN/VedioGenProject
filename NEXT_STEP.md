@@ -1,3 +1,3 @@
 # NEXT_STEP
 
-先在真实 WSL 会话中用 `bash code/server/wan_local_service/scripts/run_service.sh start` 托管后台服务，再从 Windows Qt 客户端发起一次真实任务，验证客户端能拿到 `task_id`、长任务轮询结果、终态 `status=succeeded` 和最终 `output_path`。
+服务端已由用户启动；下一步只做 Windows 客户端桌面侧复验：打开 `code\client\qt_wan_chat\build\qt_wan_chat.exe`，确认任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 在任务/结果列表中显示为 `succeeded`，并点击输出目录按钮验证真实桌面 Explorer 能否打开 `\\wsl$` 路径。

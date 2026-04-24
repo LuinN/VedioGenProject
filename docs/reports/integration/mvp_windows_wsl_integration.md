@@ -15,9 +15,63 @@ Contract stability for Windows parallel development:
 
 - task status enum remains `pending`, `running`, `succeeded`, `failed`
 - `null` semantics for `output_path` and `error_message` are unchanged
+- `GET /api/tasks/{task_id}` now also returns optional progress fields:
+  - `status_message`
+  - `progress_current`
+  - `progress_total`
+  - `progress_percent`
 - restart recovery strings remain:
   - `service restarted before task execution`
   - `service restarted while task was running`
+
+## Latest Windows Client Integration
+
+Date: 2026-04-24
+
+Service ownership note:
+
+- the service was already running before this Windows client pass
+- this client pass did not start, stop, or modify the service process
+
+Windows client command that submitted the real task:
+
+```powershell
+qt_wan_chat.exe --smoke-prompt="A calm lake at sunrise, slow camera push-in, soft golden light" --smoke-timeout-ms=2700000
+```
+
+Observed:
+
+- created task `18439c7f-d91b-42a4-a5f3-2e90624587f8`
+- 45 minute smoke window expired while the task was still `running`
+- the task later reached terminal success
+
+Final task detail:
+
+- `task_id`: `18439c7f-d91b-42a4-a5f3-2e90624587f8`
+- `status`: `succeeded`
+- `status_message`: `finished`
+- `progress_current`: `50`
+- `progress_total`: `50`
+- `progress_percent`: `100`
+- `output_path`: `/home/liupengkun/VedioGenProject/code/server/wan_local_service/outputs/18439c7f-d91b-42a4-a5f3-2e90624587f8/result.mp4`
+
+Windows client reattach command:
+
+```powershell
+qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000
+```
+
+Observed client output:
+
+```text
+Smoke test reached terminal state: succeeded | output_path=/home/liupengkun/VedioGenProject/code/server/wan_local_service/outputs/18439c7f-d91b-42a4-a5f3-2e90624587f8/result.mp4
+```
+
+Current Windows-side caveat:
+
+- `\\wsl$` access from the current Windows agent session still returns Access denied
+- the client now skips `QDir.exists()` pre-check for WSL UNC paths and hands them directly to `explorer.exe`
+- actual Explorer open success still needs verification in the real desktop session
 
 ## Default Path Status
 
@@ -39,20 +93,27 @@ The model weights were actually downloaded to that default path in this session.
 
 Latest real sample task:
 
-- `task_id`: `16daa568-fede-4da1-b20b-28f1138d09a1`
-- terminal status: `failed`
-- API `error_message`: `generate.py exited with code 1`
-- log-path blocker: `AssertionError` at `wan/modules/attention.py` because `FLASH_ATTN_2_AVAILABLE` is false
+- `task_id`: `18439c7f-d91b-42a4-a5f3-2e90624587f8`
+- terminal status: `succeeded`
+- `status_message`: `finished`
+- `progress_current`: `50`
+- `progress_total`: `50`
+- `progress_percent`: `100`
+- `output_path`: `/home/liupengkun/VedioGenProject/code/server/wan_local_service/outputs/18439c7f-d91b-42a4-a5f3-2e90624587f8/result.mp4`
 
-Earlier real attempts in the same path also confirmed the chain progressed through:
+Earlier real attempts in the same path confirmed the chain progressed through these historical blockers before the SDPA fallback path succeeded:
 
 - `einops` missing
 - `decord` missing
 - `librosa` missing
 - `peft` missing
-- latest failure at real TI2V sampling without `flash_attn`
+- TI2V sampling without `flash_attn` originally failed at `wan/modules/attention.py`
 
-This means Windows can continue against a stable API while WSL keeps advancing the local runtime dependency chain.
+Current conclusion:
+
+- Windows can continue against a stable API
+- the local service can now produce real `result.mp4`
+- generation time in the current SDPA fallback path can exceed 45 minutes for a 50-step 1280x704 task
 
 ## Windows Access Recommendation
 
@@ -116,25 +177,22 @@ Windows 侧若要打开目录，应由 Windows Codex 转换为：
   - `AssertionError (generate.py exit code 1)`
   - `ModuleNotFoundError: No module named 'einops' (generate.py exit code 1)`
 - 若需要更深错误，请允许用户打开 `log_path`
-- 由于当前真实链路仍未产出视频，客户端需要正确处理：
+- 客户端需要继续正确处理失败和未完成状态：
   - `status=failed`
   - `output_path=null`
   - `output_exists=false`
+- 客户端也需要展示成功状态的新增观测字段：
+  - `status_message`
+  - `progress_current`
+  - `progress_total`
+  - `progress_percent`
 
 ## Known Issues
 
-- 模型权重已到位，服务端真实任务已进入 TI2V 采样阶段，但当前在无 `flash_attn` 时会失败于：
-  - `wan/modules/attention.py`
-  - `assert FLASH_ATTN_2_AVAILABLE`
-- `setup_wan22.sh` 的 `flash_attn` 安装仍会失败，真实报错为：
-  - `CUDA_HOME environment variable is not set`
-  - `nvcc was not found`
-- 当前 WSL 侧已经确认：对官方 TI2V-5B 主路径，不应让 Windows 客户端尝试任何无 `flash_attn` 特判或协议分支
-- Windows Qt 客户端已完成真实编译、启动、创建任务与轮询到 `running`
-- 服务端已新增 `run_service.sh start|status|stop` 后台模式，作为掉线问题的直接缓解措施
-- 掉线问题仍需在真实 Windows -> WSL 联调中复验：
-  - 当前 agent sandbox 无法完成后台服务 `/healthz` ready check 的端口绑定复验
-  - 当前 Windows agent 会话对 `\\wsl$` 路径访问被拒绝
+- `flash_attn` 本地编译链仍是历史高风险路径，曾触发 WSL OOM；当前默认交付路径是 SDPA fallback
+- SDPA fallback 可真实出片，但生成时间偏长；本轮 Windows 客户端任务约 46 分 45 秒后完成
+- Windows Qt 客户端已完成真实编译、启动、创建任务、轮询终态和 `output_path` 获取
+- 当前 Windows agent 会话对 `\\wsl$` 路径访问被拒绝，因此 Explorer 打开输出目录的成功路径仍需真实桌面复验
 
 ## Windows Qt Client Verification
 

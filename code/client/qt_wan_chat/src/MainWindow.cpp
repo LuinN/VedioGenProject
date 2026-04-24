@@ -15,6 +15,7 @@
 #include <QShortcut>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextBrowser>
@@ -51,6 +52,75 @@ bool newerDateTimeFirst(const QDateTime &left, const QString &leftRaw, const QDa
         return false;
     }
     return leftRaw > rightRaw;
+}
+
+QString formatProgressText(const TaskModels::TaskDetail &task)
+{
+    if (task.progressPercent >= 0) {
+        if (task.progressCurrent >= 0 && task.progressTotal > 0) {
+            return QStringLiteral("%1% (%2/%3)")
+                .arg(task.progressPercent)
+                .arg(task.progressCurrent)
+                .arg(task.progressTotal);
+        }
+        return QStringLiteral("%1%").arg(task.progressPercent);
+    }
+    if (task.progressCurrent >= 0 && task.progressTotal > 0) {
+        return QStringLiteral("%1/%2").arg(task.progressCurrent).arg(task.progressTotal);
+    }
+    return QStringLiteral("-");
+}
+
+QString formatStageText(const TaskModels::TaskDetail &task)
+{
+    if (!task.statusMessage.trimmed().isEmpty()) {
+        return task.statusMessage.trimmed();
+    }
+    return QStringLiteral("-");
+}
+
+QString formatRuntimeSummary(const TaskModels::TaskDetail &task)
+{
+    QStringList parts;
+    parts << task.status;
+    const QString stage = formatStageText(task);
+    if (stage != QStringLiteral("-")) {
+        parts << stage;
+    }
+    const QString progress = formatProgressText(task);
+    if (progress != QStringLiteral("-")) {
+        parts << progress;
+    }
+    return parts.join(QStringLiteral(" | "));
+}
+
+bool visibleTaskStateChanged(const TaskModels::TaskDetail &previous, const TaskModels::TaskDetail &task)
+{
+    return previous.status != task.status
+        || previous.statusMessage != task.statusMessage
+        || previous.progressCurrent != task.progressCurrent
+        || previous.progressTotal != task.progressTotal
+        || previous.progressPercent != task.progressPercent
+        || previous.outputPath != task.outputPath
+        || previous.errorMessage != task.errorMessage;
+}
+
+QString formatTaskUpdateMessage(const TaskModels::TaskDetail &task)
+{
+    QString message = QStringLiteral("Task %1 -> %2").arg(task.taskId, formatRuntimeSummary(task));
+    if (!task.outputPath.isEmpty()) {
+        message += QStringLiteral("\noutput_path: %1").arg(task.outputPath);
+    }
+    if (!task.errorMessage.isEmpty()) {
+        message += QStringLiteral("\nerror_message: %1").arg(task.errorMessage);
+    }
+    return message;
+}
+
+bool isWslSharePath(const QString &path)
+{
+    return path.startsWith(QStringLiteral("\\\\wsl$\\"), Qt::CaseInsensitive)
+        || path.startsWith(QStringLiteral("\\\\wsl.localhost\\"), Qt::CaseInsensitive);
 }
 
 } // namespace
@@ -99,7 +169,7 @@ void MainWindow::setupUi()
         &QTimer::timeout,
         this,
         [this]() {
-            finishSmokeTest(false, QStringLiteral("Smoke test timed out before reaching a terminal task state."));
+            finishSmokeTest(false, smokeTaskSnapshotSummary());
         });
 }
 
@@ -122,6 +192,33 @@ void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs)
     });
 }
 
+void MainWindow::startTaskMonitorSmoke(const QString &taskId, int timeoutMs)
+{
+    if (m_smokeTestEnabled) {
+        return;
+    }
+
+    const QString trimmedTaskId = taskId.trimmed();
+    if (trimmedTaskId.isEmpty()) {
+        finishSmokeTest(false, QStringLiteral("Smoke task id must not be empty."));
+        return;
+    }
+
+    m_smokeTestEnabled = true;
+    m_smokeTestCompleted = false;
+    m_smokeTestTaskId = trimmedTaskId;
+    m_activeTaskIds.insert(trimmedTaskId);
+
+    appendDiagnostic(QStringLiteral("Smoke task monitor scheduled: %1").arg(trimmedTaskId));
+    m_smokeTestTimeoutTimer->start(timeoutMs);
+
+    if (!m_inFlightTaskIds.contains(trimmedTaskId)) {
+        m_inFlightTaskIds.insert(trimmedTaskId);
+        m_apiClient.fetchTask(trimmedTaskId);
+    }
+    startPollingIfNeeded();
+}
+
 QWidget *MainWindow::buildTasksPanel()
 {
     auto *panel = new QWidget(this);
@@ -132,9 +229,14 @@ QWidget *MainWindow::buildTasksPanel()
     layout->addWidget(label);
 
     m_tasksTable = new QTableWidget(panel);
-    m_tasksTable->setColumnCount(4);
+    m_tasksTable->setColumnCount(6);
     m_tasksTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Status"), QStringLiteral("Task ID"), QStringLiteral("Prompt"), QStringLiteral("Updated")});
+        {QStringLiteral("Status"),
+         QStringLiteral("Progress"),
+         QStringLiteral("Stage"),
+         QStringLiteral("Task ID"),
+         QStringLiteral("Prompt"),
+         QStringLiteral("Updated")});
     m_tasksTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_tasksTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_tasksTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -143,8 +245,10 @@ QWidget *MainWindow::buildTasksPanel()
     m_tasksTable->horizontalHeader()->setStretchLastSection(true);
     m_tasksTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_tasksTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_tasksTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_tasksTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_tasksTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_tasksTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    m_tasksTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     layout->addWidget(m_tasksTable);
 
     return panel;
@@ -361,7 +465,7 @@ void MainWindow::openSelectedOutputDirectory()
         return;
     }
 
-    if (!QDir(directory).exists()) {
+    if (!isWslSharePath(directory) && !QDir(directory).exists()) {
         const QString message = QStringLiteral("Output directory does not exist: %1").arg(directory);
         appendDiagnostic(message);
         appendChatMessage(QStringLiteral("System"), message);
@@ -420,17 +524,15 @@ void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
     syncTaskDetail(task);
     refreshTasksTable();
 
-    if (!hadPrevious || previous.status != task.status || previous.outputPath != task.outputPath
-        || previous.errorMessage != task.errorMessage) {
-        QString message = QStringLiteral("Task %1 -> %2").arg(task.taskId, task.status);
-        if (!task.outputPath.isEmpty()) {
-            message += QStringLiteral("\noutput_path: %1").arg(task.outputPath);
-        }
-        if (!task.errorMessage.isEmpty()) {
-            message += QStringLiteral("\nerror_message: %1").arg(task.errorMessage);
-        }
+    if (!hadPrevious || visibleTaskStateChanged(previous, task)) {
+        const QString message = formatTaskUpdateMessage(task);
         appendChatMessage(QStringLiteral("System"), message);
         appendDiagnostic(QStringLiteral("Task update: %1").arg(message.simplified()));
+        if (!isTerminalStatus(task.status)) {
+            showUserNotice(
+                QStringLiteral("Task %1: %2").arg(task.taskId.left(8), formatRuntimeSummary(task)),
+                kPollIntervalMs + 1000);
+        }
     }
 
     if (isTerminalStatus(task.status)) {
@@ -564,6 +666,32 @@ void MainWindow::finishSmokeTest(bool success, const QString &summary)
     emit smokeTestFinished(success, summary);
 }
 
+QString MainWindow::smokeTaskSnapshotSummary() const
+{
+    if (m_smokeTestTaskId.isEmpty()) {
+        return QStringLiteral("Smoke test timed out before a task was created.");
+    }
+
+    QString summary = QStringLiteral("Smoke test timed out before task %1 reached a terminal state.")
+                          .arg(m_smokeTestTaskId);
+    if (!m_tasks.contains(m_smokeTestTaskId)) {
+        return summary;
+    }
+
+    const TaskModels::TaskDetail task = m_tasks.value(m_smokeTestTaskId);
+    summary += QStringLiteral(" Last observed: %1").arg(formatRuntimeSummary(task));
+    if (!task.outputPath.isEmpty()) {
+        summary += QStringLiteral(" | output_path=%1").arg(task.outputPath);
+    }
+    if (!task.errorMessage.isEmpty()) {
+        summary += QStringLiteral(" | error_message=%1").arg(task.errorMessage);
+    }
+    if (!task.logPath.isEmpty()) {
+        summary += QStringLiteral(" | log_path=%1").arg(task.logPath);
+    }
+    return summary;
+}
+
 void MainWindow::refreshTasksTable()
 {
     const QString preservedTaskId = selectedTaskId();
@@ -579,15 +707,24 @@ void MainWindow::refreshTasksTable()
 
         auto *statusItem = new QTableWidgetItem(task.status);
         statusItem->setData(Qt::UserRole, task.taskId);
+        statusItem->setToolTip(formatRuntimeSummary(task));
+        auto *progressItem = new QTableWidgetItem(formatProgressText(task));
+        progressItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        progressItem->setToolTip(formatRuntimeSummary(task));
+        auto *stageItem = new QTableWidgetItem(formatStageText(task));
+        stageItem->setToolTip(formatRuntimeSummary(task));
         auto *taskIdItem = new QTableWidgetItem(task.taskId);
+        taskIdItem->setData(Qt::UserRole, task.taskId);
         auto *promptItem = new QTableWidgetItem(task.prompt);
         promptItem->setToolTip(task.prompt);
         auto *updatedItem = new QTableWidgetItem(formatTimestamp(task.updateTime, task.updateTimeRaw));
 
         m_tasksTable->setItem(row, 0, statusItem);
-        m_tasksTable->setItem(row, 1, taskIdItem);
-        m_tasksTable->setItem(row, 2, promptItem);
-        m_tasksTable->setItem(row, 3, updatedItem);
+        m_tasksTable->setItem(row, 1, progressItem);
+        m_tasksTable->setItem(row, 2, stageItem);
+        m_tasksTable->setItem(row, 3, taskIdItem);
+        m_tasksTable->setItem(row, 4, promptItem);
+        m_tasksTable->setItem(row, 5, updatedItem);
     }
 
     if (!preservedTaskId.isEmpty()) {
@@ -750,6 +887,14 @@ TaskModels::TaskDetail MainWindow::summaryToDetail(const TaskModels::TaskSummary
     detail.createTime = task.createTime;
     detail.updateTime = task.updateTime;
     detail.outputExists = false;
+    if (m_tasks.contains(task.taskId)) {
+        const TaskModels::TaskDetail existing = m_tasks.value(task.taskId);
+        detail.outputExists = existing.outputExists;
+        detail.statusMessage = existing.statusMessage;
+        detail.progressCurrent = existing.progressCurrent;
+        detail.progressTotal = existing.progressTotal;
+        detail.progressPercent = existing.progressPercent;
+    }
     return detail;
 }
 

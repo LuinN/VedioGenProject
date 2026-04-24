@@ -18,8 +18,10 @@ nvcc                                                 missing
 
 - 服务端最小运行链路已经打通，并已真实生成 `result.mp4`
 - 当前剩余阻塞不在“能不能跑”，而在：
-  - Windows 客户端长任务轮询闭环
-  - Windows 客户端最终联调
+  - 当前 Windows agent 会话对 `\\wsl$` 输出目录访问仍被拒绝
+  - 客户端“打开输出目录”成功路径仍需在真实桌面权限下复验
+- Windows 客户端代码已接入 `status_message` / `progress_percent` 展示
+- Windows 客户端已用真实任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 复验到 `status=succeeded` 和 `output_path`
 
 ### 1. WSL FastAPI 服务在 Windows 客户端轮询期间掉线，后台模式已补上但仍待真实联调复验
 
@@ -87,7 +89,7 @@ generate.py exit code: 0
 - 当前主阻塞已从“依赖断言”切换成“SDPA fallback 模式下真实生成更慢”
 - 这次 1280x704 样例总耗时约 31 分钟，其中采样阶段约 16 分 36 秒
 - 服务端 `run_sample_t2v.sh` 已把默认等待窗口拉长到 40 分钟，并会输出 `stage/progress`
-- 当前剩余问题主要落在 Windows 客户端轮询策略尚未按长任务重新做一次真实复验
+- Windows 客户端已用真实任务补过一次终态复验；剩余问题主要是当前 Windows agent 会话访问 `\\wsl$` 输出目录被拒绝，导致 Explorer 成功打开路径仍需在真实桌面权限下补验
 
 ### 3. 历史记录：`flash_attn` 本地编译曾触发 WSL 全局 OOM
 
@@ -194,9 +196,16 @@ flash_attn was requested, but nvcc was not found
 Access to the path '\\wsl$\Ubuntu-24.04\mnt\d\Projects\VideoGenProject\code\server\wan_local_service\logs' is denied.
 ```
 
+最新同类错误：
+
+```text
+Access to the path '\\wsl$\Ubuntu-24.04\home\liupengkun\VedioGenProject\code\server\wan_local_service\outputs\18439c7f-d91b-42a4-a5f3-2e90624587f8' is denied.
+```
+
 影响：
 
 - 客户端已实现 `\\wsl$` 路径转换和错误提示
+- 客户端现已对 `\\wsl$` / `\\wsl.localhost` 路径跳过 `QDir.exists()` 预检查，避免当前 agent 权限问题提前拦截 `explorer.exe`
 - 但“打开输出目录”的成功路径仍未在本会话真实验证
 
 ### 7. 当前 agent sandbox 不允许本地监听端口复验后台服务 `/healthz`
@@ -218,7 +227,7 @@ python3 -m http.server 8765
 - 当前 agent sandbox 里不能把本地监听端口的验证结果当成真实 WSL 主机结果
 - 后台服务 `/healthz` 的最终复验仍应放到真实 WSL 本机终端里完成
 
-### 8. `run_service.sh start` 已增强脱离当前会话，但 Windows 侧长轮询还需补一次真实复验
+### 8. Windows 客户端长轮询已补真实终态复验，但打开输出目录仍待桌面权限验证
 
 最新真实现象：
 
@@ -230,18 +239,30 @@ python3 -m http.server 8765
   - `run_service.sh stop`
 - 因此当前 WSL 侧的“后台服务起不来”已不再是主阻塞
 
+当前已完成：
+
+- 用户已启动服务端，本轮未启动或停止服务端
+- Windows Qt 客户端真实提交任务：
+  - `18439c7f-d91b-42a4-a5f3-2e90624587f8`
+- 该任务最终完成：
+  - `status=succeeded`
+  - `status_message=finished`
+  - `progress_current=50`
+  - `progress_total=50`
+  - `progress_percent=100`
+  - `output_path=/home/liupengkun/VedioGenProject/code/server/wan_local_service/outputs/18439c7f-d91b-42a4-a5f3-2e90624587f8/result.mp4`
+- `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 已成功返回终态和 `output_path`
+
 当前剩余问题：
 
-- 还没有从 Windows Qt 客户端重新补一次“后台服务 + 长任务轮询 + 最终 output_path 展示”的真实联调
+- 第一次 `--smoke-prompt` 使用 45 分钟窗口，任务实际约 46 分 45 秒完成，因此客户端超时窗口偏短；现已把默认窗口提升到 60 分钟
+- 当前 Windows agent 对 `\\wsl$` 仍访问被拒绝，无法把 Explorer 成功打开输出目录写成通过
 
 最小修复路径：
 
-- 在真实 WSL 本机终端中执行 `bash code/server/wan_local_service/scripts/run_service.sh start`
-- 再从 Windows Qt 客户端发起一次真实任务
-- 核对客户端最终是否拿到：
-  - `status=succeeded`
-  - `output_path`
-  - 长任务期间的轮询结果
+- 在真实 Windows 桌面中打开 `code\client\qt_wan_chat\build\qt_wan_chat.exe`
+- 选择任务或结果 `18439c7f-d91b-42a4-a5f3-2e90624587f8`
+- 点击输出目录按钮，验证 Explorer 是否能打开对应 `\\wsl$` 路径
 
 ### 9. 当前 agent sandbox 下直接运行 `generate.py` 会给出伪造的 CUDA 假阻塞
 

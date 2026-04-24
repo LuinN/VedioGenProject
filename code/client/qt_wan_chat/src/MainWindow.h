@@ -24,7 +24,8 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
-    void startSmokeTest(const QString &prompt, int timeoutMs = 60000);
+    void startSmokeTest(const QString &prompt, int timeoutMs = 60 * 60 * 1000);
+    void startTaskMonitorSmoke(const QString &taskId, int timeoutMs = 60 * 60 * 1000);
 
 signals:
     void smokeTestFinished(bool success, const QString &summary);
@@ -58,6 +59,7 @@ private:
     void appendDiagnostic(const QString &message);
     void showUserNotice(const QString &message, int timeoutMs = 5000);
     void finishSmokeTest(bool success, const QString &summary);
+    QString smokeTaskSnapshotSummary() const;
 
     void refreshTasksTable();
     void refreshResultsTable();

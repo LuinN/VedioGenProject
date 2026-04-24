@@ -37,6 +37,10 @@ struct TaskSummary {
 
 struct TaskDetail : TaskSummary {
     bool outputExists = false;
+    QString statusMessage;
+    int progressCurrent = -1;
+    int progressTotal = -1;
+    int progressPercent = -1;
 };
 
 struct TaskListResponse {
@@ -157,6 +161,38 @@ inline bool requireInt(const QJsonObject &object, const QString &key, int &targe
     return true;
 }
 
+inline bool readOptionalNullableString(const QJsonObject &object, const QString &key, QString &target, QString &error)
+{
+    const QJsonValue value = object.value(key);
+    if (value.isUndefined() || value.isNull()) {
+        target.clear();
+        return true;
+    }
+    if (!value.isString()) {
+        error = QStringLiteral("Field '%1' must be a string or null, got %2.")
+                    .arg(key, jsonTypeName(value));
+        return false;
+    }
+    target = value.toString();
+    return true;
+}
+
+inline bool readOptionalNullableInt(const QJsonObject &object, const QString &key, int &target, QString &error)
+{
+    const QJsonValue value = object.value(key);
+    if (value.isUndefined() || value.isNull()) {
+        target = -1;
+        return true;
+    }
+    if (!value.isDouble()) {
+        error = QStringLiteral("Field '%1' must be a number or null, got %2.")
+                    .arg(key, jsonTypeName(value));
+        return false;
+    }
+    target = value.toInt();
+    return true;
+}
+
 inline bool requireArray(const QJsonObject &object, const QString &key, QJsonArray &target, QString &error)
 {
     const QJsonValue value = object.value(key);
@@ -194,7 +230,11 @@ inline bool parseTaskSummaryObject(const QJsonObject &object, TaskSummary &targe
 inline bool parseTaskDetailObject(const QJsonObject &object, TaskDetail &target, QString &error)
 {
     if (!parseTaskSummaryObject(object, target, error)
-        || !requireBool(object, QStringLiteral("output_exists"), target.outputExists, error)) {
+        || !requireBool(object, QStringLiteral("output_exists"), target.outputExists, error)
+        || !readOptionalNullableString(object, QStringLiteral("status_message"), target.statusMessage, error)
+        || !readOptionalNullableInt(object, QStringLiteral("progress_current"), target.progressCurrent, error)
+        || !readOptionalNullableInt(object, QStringLiteral("progress_total"), target.progressTotal, error)
+        || !readOptionalNullableInt(object, QStringLiteral("progress_percent"), target.progressPercent, error)) {
         return false;
     }
     return true;
@@ -347,4 +387,3 @@ Q_DECLARE_METATYPE(TaskModels::TaskDetail)
 Q_DECLARE_METATYPE(TaskModels::TaskListResponse)
 Q_DECLARE_METATYPE(TaskModels::ResultItem)
 Q_DECLARE_METATYPE(TaskModels::ResultListResponse)
-

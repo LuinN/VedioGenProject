@@ -45,8 +45,8 @@
 - `nvcc` 当前仍不在 PATH
 - 当前工作区已经可以启动服务并跑通一次真实 `t2v` 生成
 - 当前未完成项主要剩在：
-  - Windows 客户端长任务轮询闭环
-  - Windows 客户端最终联调闭环
+  - Windows 当前 agent 会话对 `\\wsl$` 输出目录访问仍被拒绝
+  - 客户端“打开输出目录”成功路径仍需在真实桌面权限下复验
 
 ### Windows Qt 客户端
 
@@ -65,6 +65,15 @@
 - 任务创建后自动轮询并同步刷新任务列表与结果列表
 - 稳定错误体、HTTP 错误、JSON 解析错误、服务不可达错误已实现非阻塞提示
 - `\\wsl$\<distro>\...` 路径转换逻辑已实现
+- 对 `\\wsl$` / `\\wsl.localhost` 路径打开目录时，客户端不再先用 `QDir.exists()` 拦截，而是直接交给 `explorer.exe`
+- 已适配任务详情新增的长任务观测字段：
+  - `status_message`
+  - `progress_current`
+  - `progress_total`
+  - `progress_percent`
+- 任务列表现已展示阶段与采样进度
+- 命令行 smoke test 默认等待窗口已提升到 60 分钟，并支持 `--smoke-timeout-ms`
+- 命令行 smoke test 已支持 `--smoke-task-id`，可以挂到已有任务上继续轮询，不会重复创建服务端任务
 - Windows 原生编译已通过
 - Windows 原生启动已通过
 - Windows smoke test 已真实打到本地 FastAPI 服务
@@ -72,6 +81,24 @@
 ## 最近一次重要进展
 
 2026-04-24：
+
+- Windows Qt 客户端继续对齐服务端最新任务详情契约：
+  - `TaskDetail` 已解析 `status_message` / `progress_current` / `progress_total` / `progress_percent`
+  - 左侧任务列表新增 `Progress` 与 `Stage` 列
+  - 轮询日志和状态栏会展示 `running | sampling | 18% (9/50)` 这类长任务进度摘要
+  - `qt_wan_chat.exe --smoke-prompt=...` 默认超时从 60 秒提升到 60 分钟
+  - 新增 `--smoke-timeout-ms` 便于真实长任务联调时显式覆盖等待窗口
+  - 新增 `--smoke-task-id`，用于复用已有任务做客户端轮询验证
+  - `\\wsl$` / `\\wsl.localhost` 输出目录打开不再被 `QDir.exists()` 预检查提前拦截
+- Windows 原生客户端构建已重新通过：
+  - `cmake -S code\client\qt_wan_chat -B code\client\qt_wan_chat\build -G Ninja ...`
+  - `cmake --build code\client\qt_wan_chat\build --parallel`
+- 在用户已启动的服务端上完成一次真实 Windows Qt 客户端提交与轮询：
+  - `qt_wan_chat.exe --smoke-prompt="A calm lake at sunrise, slow camera push-in, soft golden light" --smoke-timeout-ms=2700000`
+  - 创建任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8`
+  - 该任务 45 分钟窗口内仍为 `running`，因此第一次 smoke 超时失败
+  - 任务随后真实完成，服务端详情返回 `status=succeeded`、`status_message=finished`、`progress_current=50`、`progress_total=50`、`progress_percent=100`
+  - 使用 `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 复用同一任务，客户端成功拿到 `succeeded` 与最终 `output_path`
 
 - 服务端可观测性和恢复语义已补强：
   - `GET /api/tasks/{task_id}` 现已增加：

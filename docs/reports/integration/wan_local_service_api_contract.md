@@ -47,6 +47,15 @@
 - `output_exists`
   - 仅在 `GET /api/tasks/{task_id}` 与 `GET /api/results` 中返回
   - 真实文件存在为 `true`，否则为 `false`
+- `status_message`
+  - 仅在 `GET /api/tasks/{task_id}` 中返回
+  - 可为 `null`
+  - 典型值包括 `creating pipeline`、`loading checkpoints`、`sampling`、`saving video`、`finished`
+- `progress_current` / `progress_total` / `progress_percent`
+  - 仅在 `GET /api/tasks/{task_id}` 中返回
+  - 可为 `null`
+  - 采样阶段通常返回当前 step、总 step 和百分比
+  - 成功完成时可返回 `progress_percent=100`
 
 ## Stable Error Format
 
@@ -148,7 +157,11 @@ Running example:
   "log_path": "/mnt/d/projects/videogenproject/code/server/wan_local_service/logs/123e4567-e89b-12d3-a456-426614174000.log",
   "create_time": "2026-04-23T13:39:00+00:00",
   "update_time": "2026-04-23T13:39:03+00:00",
-  "output_exists": false
+  "output_exists": false,
+  "status_message": "sampling",
+  "progress_current": 9,
+  "progress_total": 50,
+  "progress_percent": 18
 }
 ```
 
@@ -164,7 +177,11 @@ Succeeded example:
   "log_path": "/mnt/d/projects/videogenproject/code/server/wan_local_service/logs/123e4567-e89b-12d3-a456-426614174000.log",
   "create_time": "2026-04-23T13:39:00+00:00",
   "update_time": "2026-04-23T13:48:00+00:00",
-  "output_exists": true
+  "output_exists": true,
+  "status_message": "finished",
+  "progress_current": 50,
+  "progress_total": 50,
+  "progress_percent": 100
 }
 ```
 
@@ -180,7 +197,11 @@ Failed example:
   "log_path": "/mnt/d/projects/videogenproject/code/server/wan_local_service/logs/123e4567-e89b-12d3-a456-426614174000.log",
   "create_time": "2026-04-23T13:39:00+00:00",
   "update_time": "2026-04-23T13:39:00+00:00",
-  "output_exists": false
+  "output_exists": false,
+  "status_message": null,
+  "progress_current": null,
+  "progress_total": null,
+  "progress_percent": null
 }
 ```
 
