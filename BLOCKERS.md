@@ -2,6 +2,28 @@
 
 ## 当前真实阻塞
 
+### 本轮新增观察：Chat 进度卡片已实现，未新增服务端阻塞
+
+当前状态：
+
+- Windows Qt 客户端已把 Wan Chat 进度展示改为同一任务卡片原地更新
+- 构建与 release 打包已通过
+- 既有任务 monitor smoke 已返回 `succeeded`
+
+真实观察：
+
+```text
+code\client\qt_wan_chat\release\qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000
+Smoke test reached terminal state: succeeded | output_path=.../result.mp4 | download_url=http://127.0.0.1:8000/api/results/18439c7f-d91b-42a4-a5f3-2e90624587f8/file
+[mov,mp4,m4a,3gp,3g2,mj2 @ ...] moov atom not found
+```
+
+当前判断：
+
+- `moov atom not found` 来自 Qt Multimedia/FFmpeg 的本地预览媒体读取链路，没有导致本次 smoke 失败
+- 这不是 Chat 进度卡片功能的 blocker
+- 仍建议下一步在真实 UI 中目视确认完成任务缩略图，如果某个旧缓存视频损坏，再清理对应任务缓存目录后让客户端重建预览
+
 ### 新增：删除任务协议已完成，但当前不支持删除 `running` 任务
 
 当前状态：

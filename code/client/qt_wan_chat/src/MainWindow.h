@@ -18,12 +18,14 @@ class QLabel;
 class QListWidget;
 class QDialog;
 class QFrame;
+class QProgressBar;
 class QPushButton;
+class QScrollArea;
 class QSplitter;
 class QStatusBar;
 class QTableWidget;
-class QTextBrowser;
 class QTimer;
+class QVBoxLayout;
 
 struct DownloadedVideo {
     QString taskId;
@@ -58,6 +60,22 @@ struct TaskLocalMetadata {
     QString createTimeRaw;
     QDateTime createTime;
     bool hasInputImage = false;
+};
+
+struct TaskProgressCard {
+    QWidget *container = nullptr;
+    QLabel *titleLabel = nullptr;
+    QLabel *statusLabel = nullptr;
+    QLabel *stageLabel = nullptr;
+    QLabel *metaLabel = nullptr;
+    QLabel *timeLabel = nullptr;
+    QLabel *errorLabel = nullptr;
+    QProgressBar *progressBar = nullptr;
+};
+
+struct TaskProgressTiming {
+    QDateTime firstObservedAt;
+    double lastRatio = -1.0;
 };
 
 class MainWindow : public QMainWindow
@@ -119,6 +137,13 @@ private:
     void applyVisualStyle();
 
     void appendChatMessage(const QString &role, const QString &message);
+    QWidget *appendChatWidget(QWidget *widget, bool alignRight);
+    void scrollChatToBottom();
+    void ensureTaskProgressCard(const TaskModels::TaskDetail &task);
+    void updateTaskProgressCard(const TaskModels::TaskDetail &task);
+    double taskProgressRatio(const TaskModels::TaskDetail &task) const;
+    QString formatDuration(qint64 totalSeconds) const;
+    QString formatTaskProgressTiming(const QString &taskId, const TaskModels::TaskDetail &task);
     void appendDiagnostic(const QString &message);
     void showUserNotice(const QString &message, int timeoutMs = 5000);
     void finishSmokeTest(bool success, const QString &summary);
@@ -208,6 +233,9 @@ private:
     QSet<QString> m_thumbnailQueuedTaskIds;
     QSet<QString> m_thumbnailInFlightTaskIds;
     QSet<QString> m_thumbnailFailedTaskIds;
+    QSet<QString> m_chatTerminalReportedTaskIds;
+    QHash<QString, TaskProgressCard> m_taskProgressCards;
+    QHash<QString, TaskProgressTiming> m_taskProgressTimings;
     QStringList m_thumbnailQueue;
     QString m_currentThumbnailTaskId;
     InputImageAttachment m_currentInputImage;
@@ -241,7 +269,9 @@ private:
     QPushButton *m_openOutputDirectoryButton = nullptr;
     QPushButton *m_playVideoButton = nullptr;
     QPushButton *m_deleteVideoButton = nullptr;
-    QTextBrowser *m_chatView = nullptr;
+    QScrollArea *m_chatScrollArea = nullptr;
+    QWidget *m_chatContent = nullptr;
+    QVBoxLayout *m_chatLayout = nullptr;
     QPlainTextEdit *m_promptEdit = nullptr;
     QWidget *m_inputImagePreview = nullptr;
     QLabel *m_inputImageThumbnail = nullptr;

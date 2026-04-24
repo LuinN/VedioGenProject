@@ -142,10 +142,30 @@
   - `cmake --build code\client\qt_wan_chat\build --parallel` 成功链接后会自动刷新 `code/client/qt_wan_chat/release/`
   - `release/` 内包含 `qt_wan_chat.exe`、Qt DLL、Qt plugins、Qt Multimedia plugin 和 MinGW runtime
   - `release/` 已加入客户端 `.gitignore`，不会提交生成包
+- Wan Chat 进度展示已改为可更新任务进度卡片：
+  - 普通消息使用轻量气泡
+  - 每个新建任务在 Chat 中只创建一个按 `task_id` 复用的进度卡片
+  - 轮询进度变化只更新同一卡片，不再追加多条 System 对话
+  - 进度卡片显示状态、阶段、进度条、百分比/步数、已用时间、预计剩余时间和预计完成时间
+  - 任务成功或失败后同一卡片更新为终态，Diagnostics 仍保留每次真实进度变化
 
 ## 最近一次重要进展
 
 2026-04-25：
+
+- Windows Qt 客户端完成 Wan Chat 进度条与预估时间重构：
+  - Chat 区从 `QTextBrowser` 追加 HTML 改为 `QScrollArea + QVBoxLayout` 的 widget 消息流
+  - 用户消息和关键系统消息仍显示为 ChatGPT 风格气泡
+  - `onTaskCreated` 创建初始任务进度卡片，不再追加“Task created”系统消息
+  - `onTaskFetched` 只刷新对应任务进度卡片；每次进度变化只写入 Diagnostics，不再刷屏
+  - 任务终态时保留一条关键成功/失败系统消息，同时卡片显示终态耗时
+  - ETA 基于客户端首次观察时间和当前 `progress_percent` / `progress_current` 计算
+- Windows 原生构建与回归验证：
+  - 直接运行 CMake 时需要补齐 `D:\Qt\Tools\Ninja`、`D:\Qt\Tools\mingw1310_64\bin`、`D:\Qt\6.11.0\mingw_64\bin` 到 PATH
+  - `cmake --build code\client\qt_wan_chat\build --parallel 1` 通过，并触发 `windeployqt` 刷新 release 包
+  - 补齐 PATH 后再次运行 `cmake --build code\client\qt_wan_chat\build --parallel` 返回 `ninja: no work to do.`
+  - `code\client\qt_wan_chat\release\qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 返回 `succeeded`
+  - smoke 结束时 Qt Multimedia/FFmpeg 输出过一次 `moov atom not found`，未影响任务终态 smoke 结果；仍需真实 UI 目视确认缩略图显示链路
 
 - Windows Qt 客户端新增自动打包到本地 release 目录：
   - 新增 `tools/package_windows.ps1`

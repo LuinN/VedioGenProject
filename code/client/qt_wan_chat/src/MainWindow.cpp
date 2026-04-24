@@ -34,6 +34,8 @@
 #include <QCoreApplication>
 #include <QSaveFile>
 #include <QShortcut>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSplitter>
 #include <QStandardPaths>
@@ -41,8 +43,6 @@
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
-#include <QTextBrowser>
-#include <QTextCursor>
 #include <QTimer>
 #include <QUuid>
 #include <QVideoFrame>
@@ -70,13 +70,6 @@ constexpr auto kThumbnailVersion = "2";
 constexpr auto kDownloadPurposeUser = "user";
 constexpr auto kDownloadPurposePreview = "preview";
 constexpr qint64 kMaxInputImageBytes = 20ll * 1024ll * 1024ll;
-
-QString htmlEscapeAndBreaks(QString text)
-{
-    text = text.toHtmlEscaped();
-    text.replace(QStringLiteral("\n"), QStringLiteral("<br/>"));
-    return text;
-}
 
 bool newerDateTimeFirst(const QDateTime &left, const QString &leftRaw, const QDateTime &right, const QString &rightRaw)
 {
@@ -419,10 +412,19 @@ QWidget *MainWindow::buildChatPanel()
 
     layout->addLayout(toolbar);
 
-    m_chatView = new QTextBrowser(panel);
-    m_chatView->setObjectName(QStringLiteral("chatView"));
-    m_chatView->setReadOnly(true);
-    layout->addWidget(m_chatView, 1);
+    m_chatScrollArea = new QScrollArea(panel);
+    m_chatScrollArea->setObjectName(QStringLiteral("chatScrollArea"));
+    m_chatScrollArea->setWidgetResizable(true);
+    m_chatScrollArea->setFrameShape(QFrame::NoFrame);
+    m_chatScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_chatContent = new QWidget(m_chatScrollArea);
+    m_chatContent->setObjectName(QStringLiteral("chatContent"));
+    m_chatLayout = new QVBoxLayout(m_chatContent);
+    m_chatLayout->setContentsMargins(10, 10, 10, 10);
+    m_chatLayout->setSpacing(10);
+    m_chatLayout->addStretch(1);
+    m_chatScrollArea->setWidget(m_chatContent);
+    layout->addWidget(m_chatScrollArea, 1);
 
     auto *composerFrame = new QFrame(panel);
     composerFrame->setObjectName(QStringLiteral("composerFrame"));
@@ -726,7 +728,7 @@ QLabel[role="sectionTitle"] {
     font-weight: 600;
     padding: 2px 2px 4px 2px;
 }
-QTextBrowser#chatView,
+QScrollArea#chatScrollArea,
 QListWidget,
 QTableWidget,
 QPlainTextEdit,
@@ -739,8 +741,60 @@ QComboBox {
     selection-background-color: #ececec;
     selection-color: #202123;
 }
-QTextBrowser#chatView {
-    padding: 10px;
+QScrollArea#chatScrollArea {
+    border: none;
+    background: #f7f7f8;
+}
+QWidget#chatContent {
+    background: #f7f7f8;
+}
+QFrame#chatBubbleUser,
+QFrame#chatBubbleSystem {
+    border-radius: 8px;
+}
+QFrame#chatBubbleUser {
+    background: #f3f3f3;
+    border: 1px solid #e2e2e2;
+}
+QFrame#chatBubbleSystem {
+    background: #ffffff;
+    border: 1px solid #e8e8e8;
+}
+QLabel#chatMeta {
+    color: #777777;
+    font-size: 11px;
+}
+QLabel#chatMessageText {
+    color: #202123;
+    font-size: 13px;
+}
+QFrame#taskProgressCard {
+    background: #ffffff;
+    border: 1px solid #e8e8e8;
+    border-radius: 8px;
+}
+QLabel#taskProgressTitle {
+    color: #202123;
+    font-size: 13px;
+    font-weight: 600;
+}
+QLabel#progressStatusPill {
+    border: 1px solid #e1e1e1;
+    border-radius: 8px;
+    padding: 3px 8px;
+    background: #f7f7f8;
+    color: #4a4a4a;
+    font-size: 12px;
+}
+QLabel#taskProgressStage,
+QLabel#taskProgressMeta,
+QLabel#taskProgressTime {
+    color: #6b6b6b;
+    font-size: 12px;
+}
+QLabel#taskProgressError {
+    color: #a33a3a;
+    font-size: 12px;
 }
 QListWidget {
     padding: 2px;
@@ -1318,6 +1372,7 @@ void MainWindow::onTaskCreated(const TaskModels::TaskSummary &task)
     }
 
     syncTaskSummary(task);
+    updateTaskProgressCard(summaryToDetail(task));
     m_activeTaskIds.insert(task.taskId);
     startPollingIfNeeded();
 
@@ -1325,14 +1380,6 @@ void MainWindow::onTaskCreated(const TaskModels::TaskSummary &task)
         m_smokeTestTaskId = task.taskId;
     }
 
-    appendChatMessage(
-        QStringLiteral("System"),
-        QStringLiteral("Task created\n"
-                       "task_id: %1\n"
-                       "mode: %2\n"
-                       "status: %3\n"
-                       "log_path: %4")
-            .arg(task.taskId, normalizedTaskMode(task), task.status, task.logPath));
     appendDiagnostic(QStringLiteral("Task created: %1 mode=%2 status=%3")
                          .arg(task.taskId, normalizedTaskMode(task), task.status));
     refreshTasksTable();
@@ -1378,11 +1425,11 @@ void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
             saveTaskMetadata(metadata);
         }
     }
+    updateTaskProgressCard(task);
     refreshTasksTable();
 
     if (!hadPrevious || visibleTaskStateChanged(previous, task)) {
         const QString message = formatTaskUpdateMessage(task);
-        appendChatMessage(QStringLiteral("System"), message);
         appendDiagnostic(QStringLiteral("Task update: %1").arg(message.simplified()));
         if (!isTerminalStatus(task.status)) {
             showUserNotice(
@@ -1400,6 +1447,20 @@ void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
             showUserNotice(QStringLiteral("Task failed: %1").arg(task.taskId));
         } else if (task.status == QStringLiteral("succeeded")) {
             showUserNotice(QStringLiteral("Task succeeded: %1").arg(task.taskId));
+        }
+        if (!m_chatTerminalReportedTaskIds.contains(task.taskId)) {
+            m_chatTerminalReportedTaskIds.insert(task.taskId);
+            QString terminalMessage = task.status == QStringLiteral("succeeded")
+                ? QStringLiteral("Task succeeded\n")
+                : QStringLiteral("Task failed\n");
+            terminalMessage += QStringLiteral("task_id: %1").arg(task.taskId);
+            if (!task.outputPath.isEmpty()) {
+                terminalMessage += QStringLiteral("\noutput_path: %1").arg(task.outputPath);
+            }
+            if (!task.errorMessage.isEmpty()) {
+                terminalMessage += QStringLiteral("\nerror_message: %1").arg(task.errorMessage);
+            }
+            appendChatMessage(QStringLiteral("System"), terminalMessage);
         }
 
         if (m_smokeTestEnabled && task.taskId == m_smokeTestTaskId) {
@@ -1490,6 +1551,14 @@ void MainWindow::onTaskDeleted(const TaskModels::TaskDeleteResponse &task)
 
     m_deletedTaskIds.insert(taskId);
     saveDeletedTasks();
+    if (m_taskProgressCards.contains(taskId)) {
+        const TaskProgressCard card = m_taskProgressCards.take(taskId);
+        if (card.container != nullptr) {
+            card.container->deleteLater();
+        }
+    }
+    m_taskProgressTimings.remove(taskId);
+    m_chatTerminalReportedTaskIds.remove(taskId);
     refreshTasksTable();
     refreshResultsTable();
     refreshVideosTable();
@@ -1663,24 +1732,245 @@ void MainWindow::appendChatMessage(const QString &role, const QString &message)
 {
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
     const bool isUser = role.compare(QStringLiteral("User"), Qt::CaseInsensitive) == 0;
-    const QString align = isUser ? QStringLiteral("right") : QStringLiteral("left");
-    const QString background = isUser ? QStringLiteral("#f3f3f3") : QStringLiteral("#ffffff");
-    const QString border = isUser ? QStringLiteral("#e2e2e2") : QStringLiteral("#ffffff");
-    const QString html = QStringLiteral(
-                             "<div style=\"margin:10px 0;\" align=\"%1\">"
-                             "<table cellspacing=\"0\" cellpadding=\"0\" style=\"background:%2; border:1px solid %3; border-radius:8px;\">"
-                             "<tr><td style=\"padding:8px 10px;\">"
-                             "<span style=\"font-size:11px; color:#777777;\">%4 · %5</span><br/>"
-                             "<span style=\"font-size:14px; color:#202123;\">%6</span>"
-                             "</td></tr></table></div>")
-                             .arg(align,
-                                  background,
-                                  border,
-                                  htmlEscapeAndBreaks(stamp),
-                                  htmlEscapeAndBreaks(role),
-                                  htmlEscapeAndBreaks(message));
-    m_chatView->append(html);
-    m_chatView->moveCursor(QTextCursor::End);
+
+    auto *bubble = new QFrame(m_chatContent);
+    bubble->setObjectName(isUser ? QStringLiteral("chatBubbleUser") : QStringLiteral("chatBubbleSystem"));
+    bubble->setMaximumWidth(620);
+    auto *layout = new QVBoxLayout(bubble);
+    layout->setContentsMargins(10, 8, 10, 8);
+    layout->setSpacing(4);
+
+    auto *metaLabel = new QLabel(QStringLiteral("%1 · %2").arg(stamp, role), bubble);
+    metaLabel->setObjectName(QStringLiteral("chatMeta"));
+    metaLabel->setTextFormat(Qt::PlainText);
+    layout->addWidget(metaLabel);
+
+    auto *messageLabel = new QLabel(message, bubble);
+    messageLabel->setObjectName(QStringLiteral("chatMessageText"));
+    messageLabel->setTextFormat(Qt::PlainText);
+    messageLabel->setWordWrap(true);
+    messageLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(messageLabel);
+
+    appendChatWidget(bubble, isUser);
+}
+
+QWidget *MainWindow::appendChatWidget(QWidget *widget, bool alignRight)
+{
+    if (m_chatLayout == nullptr || m_chatContent == nullptr || widget == nullptr) {
+        return nullptr;
+    }
+
+    auto *row = new QWidget(m_chatContent);
+    auto *rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(0);
+    if (alignRight) {
+        rowLayout->addStretch(1);
+        rowLayout->addWidget(widget);
+    } else {
+        rowLayout->addWidget(widget);
+        rowLayout->addStretch(1);
+    }
+
+    const int insertIndex = qMax(0, m_chatLayout->count() - 1);
+    m_chatLayout->insertWidget(insertIndex, row);
+    scrollChatToBottom();
+    return row;
+}
+
+void MainWindow::scrollChatToBottom()
+{
+    if (m_chatScrollArea == nullptr || m_chatScrollArea->verticalScrollBar() == nullptr) {
+        return;
+    }
+    QTimer::singleShot(0, this, [this]() {
+        if (m_chatScrollArea == nullptr || m_chatScrollArea->verticalScrollBar() == nullptr) {
+            return;
+        }
+        QScrollBar *scrollBar = m_chatScrollArea->verticalScrollBar();
+        scrollBar->setValue(scrollBar->maximum());
+    });
+}
+
+void MainWindow::ensureTaskProgressCard(const TaskModels::TaskDetail &task)
+{
+    if (task.taskId.trimmed().isEmpty() || m_taskProgressCards.contains(task.taskId)) {
+        return;
+    }
+
+    auto *card = new QFrame(m_chatContent);
+    card->setObjectName(QStringLiteral("taskProgressCard"));
+    card->setMaximumWidth(660);
+    auto *layout = new QVBoxLayout(card);
+    layout->setContentsMargins(12, 10, 12, 10);
+    layout->setSpacing(8);
+
+    auto *topRow = new QHBoxLayout();
+    topRow->setContentsMargins(0, 0, 0, 0);
+    topRow->setSpacing(8);
+
+    auto *titleLabel = new QLabel(card);
+    titleLabel->setObjectName(QStringLiteral("taskProgressTitle"));
+    titleLabel->setTextFormat(Qt::PlainText);
+    topRow->addWidget(titleLabel, 1);
+
+    auto *statusLabel = new QLabel(card);
+    statusLabel->setObjectName(QStringLiteral("progressStatusPill"));
+    statusLabel->setTextFormat(Qt::PlainText);
+    topRow->addWidget(statusLabel);
+    layout->addLayout(topRow);
+
+    auto *stageLabel = new QLabel(card);
+    stageLabel->setObjectName(QStringLiteral("taskProgressStage"));
+    stageLabel->setTextFormat(Qt::PlainText);
+    stageLabel->setWordWrap(true);
+    layout->addWidget(stageLabel);
+
+    auto *progressBar = new QProgressBar(card);
+    progressBar->setRange(0, 100);
+    progressBar->setValue(0);
+    progressBar->setTextVisible(true);
+    layout->addWidget(progressBar);
+
+    auto *metaLabel = new QLabel(card);
+    metaLabel->setObjectName(QStringLiteral("taskProgressMeta"));
+    metaLabel->setTextFormat(Qt::PlainText);
+    metaLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(metaLabel);
+
+    auto *timeLabel = new QLabel(card);
+    timeLabel->setObjectName(QStringLiteral("taskProgressTime"));
+    timeLabel->setTextFormat(Qt::PlainText);
+    layout->addWidget(timeLabel);
+
+    auto *errorLabel = new QLabel(card);
+    errorLabel->setObjectName(QStringLiteral("taskProgressError"));
+    errorLabel->setTextFormat(Qt::PlainText);
+    errorLabel->setWordWrap(true);
+    errorLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    errorLabel->setVisible(false);
+    layout->addWidget(errorLabel);
+
+    TaskProgressCard progressCard;
+    progressCard.titleLabel = titleLabel;
+    progressCard.statusLabel = statusLabel;
+    progressCard.stageLabel = stageLabel;
+    progressCard.metaLabel = metaLabel;
+    progressCard.timeLabel = timeLabel;
+    progressCard.errorLabel = errorLabel;
+    progressCard.progressBar = progressBar;
+    progressCard.container = appendChatWidget(card, false);
+    m_taskProgressCards.insert(task.taskId, progressCard);
+
+    TaskProgressTiming timing = m_taskProgressTimings.value(task.taskId);
+    if (!timing.firstObservedAt.isValid()) {
+        timing.firstObservedAt = QDateTime::currentDateTime();
+    }
+    m_taskProgressTimings.insert(task.taskId, timing);
+}
+
+void MainWindow::updateTaskProgressCard(const TaskModels::TaskDetail &task)
+{
+    if (task.taskId.trimmed().isEmpty()) {
+        return;
+    }
+
+    ensureTaskProgressCard(task);
+    if (!m_taskProgressCards.contains(task.taskId)) {
+        return;
+    }
+
+    TaskProgressCard card = m_taskProgressCards.value(task.taskId);
+    const QString modeLabel = taskModeLabel(task);
+    const QString shortTaskId = task.taskId.left(8);
+    card.titleLabel->setText(QStringLiteral("Task %1 · %2").arg(shortTaskId, modeLabel));
+    card.statusLabel->setText(task.status.isEmpty() ? QStringLiteral("pending") : task.status);
+    card.stageLabel->setText(formatStageText(task));
+    card.stageLabel->setVisible(formatStageText(task) != QStringLiteral("-"));
+
+    const double ratio = taskProgressRatio(task);
+    if (ratio >= 0.0) {
+        card.progressBar->setValue(qBound(0, qRound(ratio * 100.0), 100));
+        card.progressBar->setFormat(formatProgressText(task));
+    } else {
+        card.progressBar->setValue(0);
+        card.progressBar->setFormat(QStringLiteral("Estimating..."));
+    }
+
+    const QString size = task.size.isEmpty() ? QStringLiteral("-") : task.size;
+    card.metaLabel->setText(QStringLiteral("task_id=%1 · size=%2").arg(task.taskId, size));
+    card.timeLabel->setText(formatTaskProgressTiming(task.taskId, task));
+
+    const bool hasError = !task.errorMessage.trimmed().isEmpty();
+    card.errorLabel->setVisible(hasError);
+    if (hasError) {
+        card.errorLabel->setText(task.errorMessage.trimmed());
+    }
+    scrollChatToBottom();
+}
+
+double MainWindow::taskProgressRatio(const TaskModels::TaskDetail &task) const
+{
+    if (task.progressPercent >= 0) {
+        return qBound(0.0, static_cast<double>(task.progressPercent) / 100.0, 1.0);
+    }
+    if (task.progressCurrent >= 0 && task.progressTotal > 0) {
+        return qBound(0.0, static_cast<double>(task.progressCurrent) / static_cast<double>(task.progressTotal), 1.0);
+    }
+    return -1.0;
+}
+
+QString MainWindow::formatDuration(qint64 totalSeconds) const
+{
+    totalSeconds = qMax<qint64>(0, totalSeconds);
+    const qint64 hours = totalSeconds / 3600;
+    const qint64 minutes = (totalSeconds % 3600) / 60;
+    const qint64 seconds = totalSeconds % 60;
+    if (hours > 0) {
+        return QStringLiteral("%1:%2:%3")
+            .arg(hours)
+            .arg(minutes, 2, 10, QLatin1Char('0'))
+            .arg(seconds, 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1:%2")
+        .arg(minutes, 2, 10, QLatin1Char('0'))
+        .arg(seconds, 2, 10, QLatin1Char('0'));
+}
+
+QString MainWindow::formatTaskProgressTiming(const QString &taskId, const TaskModels::TaskDetail &task)
+{
+    TaskProgressTiming timing = m_taskProgressTimings.value(taskId);
+    const QDateTime now = QDateTime::currentDateTime();
+    if (!timing.firstObservedAt.isValid()) {
+        timing.firstObservedAt = now;
+    }
+
+    const qint64 elapsedSeconds = qMax<qint64>(0, timing.firstObservedAt.secsTo(now));
+    QString text;
+    if (isTerminalStatus(task.status)) {
+        const QString terminalText = task.status == QStringLiteral("succeeded")
+            ? QStringLiteral("完成于")
+            : QStringLiteral("结束于");
+        text = QStringLiteral("耗时 %1 · %2 %3")
+                   .arg(formatDuration(elapsedSeconds), terminalText, now.toString(QStringLiteral("HH:mm")));
+    } else {
+        const double ratio = taskProgressRatio(task);
+        if (ratio > 0.0 && (timing.lastRatio < 0.0 || ratio >= timing.lastRatio)) {
+            timing.lastRatio = ratio;
+            const qint64 totalSeconds = qMax<qint64>(elapsedSeconds, static_cast<qint64>(elapsedSeconds / ratio));
+            const qint64 remainingSeconds = qMax<qint64>(0, totalSeconds - elapsedSeconds);
+            text = QStringLiteral("已用 %1 · 预计剩余 %2 · 预计 %3 完成")
+                       .arg(formatDuration(elapsedSeconds),
+                            formatDuration(remainingSeconds),
+                            now.addSecs(remainingSeconds).toString(QStringLiteral("HH:mm")));
+        } else {
+            text = QStringLiteral("已用 %1 · Estimating...").arg(formatDuration(elapsedSeconds));
+        }
+    }
+
+    m_taskProgressTimings.insert(taskId, timing);
+    return text;
 }
 
 void MainWindow::appendDiagnostic(const QString &message)
