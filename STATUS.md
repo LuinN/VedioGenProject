@@ -71,10 +71,11 @@
   - `GET /api/tasks/{task_id}`
   - `GET /api/tasks`
   - `GET /api/results`
-- 三栏主窗口已完成：
+- 主窗口现已收敛为左侧 Tasks + 中间 Wan Chat 两栏：
   - 任务列表
   - 聊天区 / 输入框 / 发送按钮
-  - 配置区 / 结果列表 / 输出目录 / 诊断日志
+  - 顶部工具栏
+  - Configuration / Videos / Diagnostics 非模态弹窗
 - 启动自动拉取 `/healthz`、`/api/tasks`、`/api/results`
 - 任务创建后自动轮询并同步刷新任务列表与结果列表
 - 稳定错误体、HTTP 错误、JSON 解析错误、服务不可达错误已实现非阻塞提示
@@ -90,6 +91,12 @@
 - 已支持统一下载目录，目录配置写入 `QSettings`
 - 已支持本地 Videos 列表，下载索引持久化到 `QStandardPaths::AppDataLocation/downloaded_videos.json`
 - 已支持双击视频或点击 `Play Selected` 调用 Windows 默认播放器
+- 已支持完成任务卡片显示结果视频首帧截图：
+  - 缩略图缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/thumbnail.png`
+  - 预览视频缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/result.mp4`
+  - 可复用 Videos 索引里的本地 mp4
+  - 缺少本地 mp4 时会按需后台下载到任务缓存目录
+  - 双击任务卡片中的结果截图可调用 Windows 默认播放器
 - 已接入输入区单图附件：
   - 支持 `png` / `jpg` / `jpeg` / `webp`
   - 选择后会显示缩略图、文件名和删除按钮
@@ -114,6 +121,27 @@
 - Windows smoke test 已真实打到本地 FastAPI 服务
 
 ## 最近一次重要进展
+
+2026-04-25：
+
+- Windows Qt 客户端完成 ChatGPT 风格主界面重构：
+  - 启动后不再显示右侧 Configuration / Results / Videos / Diagnostics 面板
+  - 主界面只保留左侧 Tasks 和中间 Wan Chat
+  - Wan Chat 顶部新增工具栏：`Configuration` / `Videos` / `Diagnostics`
+  - `Configuration`、`Videos`、`Diagnostics` 均改为非模态弹窗
+  - `Results` 从可见 UI 删除，仍保留后台 `/api/results` 数据用于 `download_url` 和预览缓存
+- Windows Qt 客户端完成任务结果首帧卡片：
+  - 新增 `Qt6::Multimedia` 依赖
+  - 使用隐藏 `QMediaPlayer + QVideoSink` 从本地 mp4 提取首帧
+  - 成功任务卡片会显示类似 ChatGPT 图片生成结果的媒体预览块
+  - 已用任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 生成真实缩略图：
+    - `C:\Users\37545\AppData\Local\VideoGenProject\tasks\18439c7f-d91b-42a4-a5f3-2e90624587f8\thumbnail.png`
+    - 文件大小：`614256` bytes
+  - 双击预览图会尝试播放本地 mp4；真实桌面播放器弹出仍需人工目视确认
+- Windows 原生客户端构建与回归验证：
+  - `cmake -S code\client\qt_wan_chat -B code\client\qt_wan_chat\build -G Ninja ...` 通过
+  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
+  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`
 
 2026-04-24：
 

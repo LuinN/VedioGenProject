@@ -10,16 +10,23 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QSet>
+#include <QStringList>
 
+class QEvent;
 class QLineEdit;
 class QLabel;
 class QListWidget;
+class QDialog;
+class QFrame;
+class QMediaPlayer;
 class QPushButton;
 class QSplitter;
 class QStatusBar;
 class QTableWidget;
 class QTextBrowser;
 class QTimer;
+class QVideoFrame;
+class QVideoSink;
 
 struct DownloadedVideo {
     QString taskId;
@@ -75,6 +82,9 @@ private slots:
     void refreshInitialData();
     void pollActiveTasks();
     void updateOutputDirectoryField();
+    void showConfigurationDialog();
+    void showVideosDialog();
+    void showDiagnosticsDialog();
     void chooseInputImage();
     void removeInputImage();
     void chooseDownloadDirectory();
@@ -90,6 +100,9 @@ private slots:
     void onResultDownloaded(const ResultDownload &download);
     void onRequestFailed(const RequestFailure &failure);
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     static constexpr int kPollIntervalMs = 2000;
     static constexpr int kListLimit = 20;
@@ -98,6 +111,10 @@ private:
     QWidget *buildTasksPanel();
     QWidget *buildChatPanel();
     QWidget *buildConfigPanel();
+    QWidget *buildVideosPanel();
+    QWidget *buildDiagnosticsPanel();
+    void setupDialogs();
+    void setupHiddenResultsTable();
     void connectSignals();
     void applyVisualStyle();
 
@@ -109,6 +126,7 @@ private:
 
     void refreshTasksTable();
     QWidget *buildTaskCard(const TaskModels::TaskDetail &task);
+    QWidget *buildTaskResultPreview(const TaskModels::TaskDetail &task);
     void refreshResultsTable();
     void refreshVideosTable();
     void syncTaskSummary(const TaskModels::TaskSummary &task);
@@ -144,6 +162,15 @@ private:
     bool finalizePendingImageForTask(const TaskModels::TaskSummary &task, TaskLocalMetadata &metadata, QString *error = nullptr);
     QString taskReferenceImagePath(const TaskModels::TaskDetail &task) const;
     QString taskModeLabel(const TaskModels::TaskDetail &task) const;
+    QString thumbnailPathForTask(const QString &taskId) const;
+    QString previewVideoPathForTask(const QString &taskId) const;
+    QString localVideoPathForPreview(const QString &taskId) const;
+    void ensureTaskResultPreview(const TaskModels::TaskDetail &task);
+    bool startPreviewDownloadForTask(const TaskModels::TaskDetail &task, const QString &reason);
+    void enqueueThumbnailGeneration(const QString &taskId);
+    void startNextThumbnailGeneration();
+    void finishThumbnailGeneration(bool success, const QString &details);
+    void playTaskVideo(const QString &taskId);
     QString configuredDownloadDirectory() const;
     bool ensureDownloadDirectory(QString &directory);
     bool startResultDownloadForTask(const TaskModels::TaskDetail &task, const QString &reason);
@@ -166,6 +193,12 @@ private:
     QSet<QString> m_activeTaskIds;
     QSet<QString> m_inFlightTaskIds;
     QSet<QString> m_downloadInFlightTaskIds;
+    QSet<QString> m_previewDownloadInFlightTaskIds;
+    QSet<QString> m_thumbnailQueuedTaskIds;
+    QSet<QString> m_thumbnailInFlightTaskIds;
+    QSet<QString> m_thumbnailFailedTaskIds;
+    QStringList m_thumbnailQueue;
+    QString m_currentThumbnailTaskId;
     InputImageAttachment m_currentInputImage;
 
     QTimer *m_pollTimer = nullptr;
@@ -176,6 +209,11 @@ private:
     QString m_smokeImagePath;
     QString m_smokeTestTaskId;
 
+    QDialog *m_configurationDialog = nullptr;
+    QDialog *m_videosDialog = nullptr;
+    QDialog *m_diagnosticsDialog = nullptr;
+    QMediaPlayer *m_thumbnailPlayer = nullptr;
+    QVideoSink *m_thumbnailVideoSink = nullptr;
     QLineEdit *m_serviceUrlEdit = nullptr;
     QComboBox *m_sizeCombo = nullptr;
     QLineEdit *m_wslDistroEdit = nullptr;
@@ -183,6 +221,9 @@ private:
     QLineEdit *m_outputDirectoryEdit = nullptr;
     QPushButton *m_applyServiceUrlButton = nullptr;
     QPushButton *m_sendButton = nullptr;
+    QPushButton *m_configurationButton = nullptr;
+    QPushButton *m_videosButton = nullptr;
+    QPushButton *m_diagnosticsButton = nullptr;
     QPushButton *m_addImageButton = nullptr;
     QPushButton *m_removeImageButton = nullptr;
     QPushButton *m_chooseDownloadDirectoryButton = nullptr;

@@ -19,7 +19,9 @@ enum class RequestKind {
 struct RequestFailure {
     RequestKind kind = RequestKind::HealthCheck;
     int httpStatus = 0;
+    QString taskId;
     QString clientRequestId;
+    QString downloadPurpose;
     QString stableCode;
     QString userMessage;
     QString details;
@@ -30,6 +32,7 @@ struct RequestFailure {
 struct ResultDownload {
     QString taskId;
     QString localPath;
+    QString purpose;
     qint64 fileSize = 0;
     QUrl url;
 };
@@ -52,7 +55,7 @@ public:
     void fetchTask(const QString &taskId);
     void fetchTasks(int limit);
     void fetchResults(int limit);
-    void downloadResult(const QString &taskId, const QUrl &downloadUrl, const QString &localPath);
+    void downloadResult(const QString &taskId, const QUrl &downloadUrl, const QString &localPath, const QString &purpose = {});
 
 signals:
     void healthChecked(const TaskModels::HealthResponse &health);

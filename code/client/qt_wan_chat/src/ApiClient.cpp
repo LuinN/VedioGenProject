@@ -181,7 +181,7 @@ void ApiClient::fetchResults(int limit)
     sendGetRequest(RequestKind::FetchResults, url);
 }
 
-void ApiClient::downloadResult(const QString &taskId, const QUrl &downloadUrl, const QString &localPath)
+void ApiClient::downloadResult(const QString &taskId, const QUrl &downloadUrl, const QString &localPath, const QString &purpose)
 {
     if (taskId.trimmed().isEmpty()) {
         emitInvalidBaseUrlFailure(RequestKind::DownloadResult, QStringLiteral("Task id is empty."));
@@ -190,6 +190,8 @@ void ApiClient::downloadResult(const QString &taskId, const QUrl &downloadUrl, c
     if (!downloadUrl.isValid() || downloadUrl.scheme().isEmpty() || downloadUrl.host().isEmpty()) {
         RequestFailure failure;
         failure.kind = RequestKind::DownloadResult;
+        failure.taskId = taskId.trimmed();
+        failure.downloadPurpose = purpose.trimmed();
         failure.stableCode = QStringLiteral("invalid_download_url");
         failure.userMessage = QStringLiteral("The result download URL is invalid.");
         failure.details = downloadUrl.toString();
@@ -200,6 +202,8 @@ void ApiClient::downloadResult(const QString &taskId, const QUrl &downloadUrl, c
     if (localPath.trimmed().isEmpty()) {
         RequestFailure failure;
         failure.kind = RequestKind::DownloadResult;
+        failure.taskId = taskId.trimmed();
+        failure.downloadPurpose = purpose.trimmed();
         failure.stableCode = QStringLiteral("invalid_local_path");
         failure.userMessage = QStringLiteral("The local save path is empty.");
         failure.url = downloadUrl;
@@ -213,6 +217,7 @@ void ApiClient::downloadResult(const QString &taskId, const QUrl &downloadUrl, c
     QNetworkReply *reply = m_network.get(request);
     reply->setProperty("taskId", taskId.trimmed());
     reply->setProperty("localPath", localPath.trimmed());
+    reply->setProperty("downloadPurpose", purpose.trimmed());
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         handleReply(RequestKind::DownloadResult, reply);
     });
@@ -356,6 +361,7 @@ void ApiClient::handleReply(RequestKind kind, QNetworkReply *reply)
         ResultDownload download;
         download.taskId = reply->property("taskId").toString();
         download.localPath = localPath;
+        download.purpose = reply->property("downloadPurpose").toString();
         download.fileSize = body.size();
         download.url = reply->request().url();
         emit resultDownloaded(download);
@@ -457,7 +463,9 @@ RequestFailure ApiClient::buildNetworkFailure(RequestKind kind, QNetworkReply *r
     RequestFailure failure;
     failure.kind = kind;
     failure.httpStatus = 0;
+    failure.taskId = reply->property("taskId").toString();
     failure.clientRequestId = reply->property("clientRequestId").toString();
+    failure.downloadPurpose = reply->property("downloadPurpose").toString();
     failure.stableCode = QStringLiteral("network_error");
     failure.userMessage = QStringLiteral("Could not reach the local service. Check the URL and make sure FastAPI is running.");
     failure.details = reply->errorString();
@@ -471,7 +479,9 @@ RequestFailure ApiClient::buildHttpFailure(RequestKind kind, QNetworkReply *repl
     RequestFailure failure;
     failure.kind = kind;
     failure.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    failure.taskId = reply->property("taskId").toString();
     failure.clientRequestId = reply->property("clientRequestId").toString();
+    failure.downloadPurpose = reply->property("downloadPurpose").toString();
     failure.rawBody = body;
     failure.url = reply->request().url();
 
@@ -504,7 +514,9 @@ RequestFailure ApiClient::buildParseFailure(RequestKind kind, QNetworkReply *rep
     RequestFailure failure;
     failure.kind = kind;
     failure.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    failure.taskId = reply->property("taskId").toString();
     failure.clientRequestId = reply->property("clientRequestId").toString();
+    failure.downloadPurpose = reply->property("downloadPurpose").toString();
     failure.stableCode = QStringLiteral("client_parse_error");
     failure.userMessage = QStringLiteral("The service returned malformed JSON for %1.")
                               .arg(requestKindName(kind));
@@ -523,6 +535,8 @@ RequestFailure ApiClient::buildDownloadSaveFailure(QNetworkReply *reply, const Q
     RequestFailure failure;
     failure.kind = RequestKind::DownloadResult;
     failure.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    failure.taskId = reply->property("taskId").toString();
+    failure.downloadPurpose = reply->property("downloadPurpose").toString();
     failure.stableCode = QStringLiteral("download_save_error");
     failure.userMessage = QStringLiteral("The result video could not be saved locally.");
     failure.details = details;

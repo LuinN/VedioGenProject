@@ -106,6 +106,26 @@ Client-side result:
 - failed create-task upload clears the pending image cache
 - existing T2V monitor smoke still succeeds against task `18439c7f-d91b-42a4-a5f3-2e90624587f8`
 
+Windows client UI and thumbnail pass:
+
+- main window now opens as two visible columns:
+  - left `Tasks`
+  - center `Wan Chat`
+- right-side `Configuration` / `Videos` / `Diagnostics` panels are now opened from toolbar buttons
+- visible `Results` UI was removed; `/api/results` is still consumed in the background
+- finished task cards can show first-frame thumbnails from local mp4 files
+- thumbnail cache path:
+  - `C:\Users\37545\AppData\Local\VideoGenProject\tasks\<task_id>\thumbnail.png`
+- preview mp4 cache path:
+  - `C:\Users\37545\AppData\Local\VideoGenProject\tasks\<task_id>\result.mp4`
+
+Verified thumbnail:
+
+- `task_id`: `18439c7f-d91b-42a4-a5f3-2e90624587f8`
+- `thumbnail`: `C:\Users\37545\AppData\Local\VideoGenProject\tasks\18439c7f-d91b-42a4-a5f3-2e90624587f8\thumbnail.png`
+- file size: `614256` bytes
+- extraction path: Qt Multimedia `QMediaPlayer` + `QVideoSink`
+
 Current interpretation:
 
 - the checked-in service contract supports multipart `i2v`

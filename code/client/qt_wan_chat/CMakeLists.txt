@@ -6,7 +6,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC OFF)
 set(CMAKE_AUTORCC OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Network Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Multimedia Network Widgets)
 
 add_executable(qt_wan_chat
     src/main.cpp
@@ -23,9 +23,9 @@ target_compile_features(qt_wan_chat PRIVATE cxx_std_17)
 
 target_link_libraries(qt_wan_chat
     PRIVATE
+        Qt6::Multimedia
         Qt6::Network
         Qt6::Widgets
 )
 
 target_include_directories(qt_wan_chat PRIVATE src)
-
