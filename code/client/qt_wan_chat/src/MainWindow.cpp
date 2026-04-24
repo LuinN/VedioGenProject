@@ -3,17 +3,28 @@
 #include "utils/WslPathUtils.h"
 
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
+#include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHeaderView>
+#include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
 #include <QProcess>
 #include <QPushButton>
 #include <QCoreApplication>
+#include <QSaveFile>
 #include <QShortcut>
+#include <QSettings>
 #include <QSplitter>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTableWidget>
@@ -32,6 +43,8 @@ constexpr auto kDefaultServiceUrl = "http://127.0.0.1:8000";
 constexpr auto kDefaultSize = "1280*704";
 constexpr auto kAlternateSize = "704*1280";
 constexpr auto kDefaultDistro = "Ubuntu-24.04";
+constexpr auto kDownloadDirectorySetting = "downloads/directory";
+constexpr auto kVideoIndexFileName = "downloaded_videos.json";
 
 QString htmlEscapeAndBreaks(QString text)
 {
@@ -123,12 +136,37 @@ bool isWslSharePath(const QString &path)
         || path.startsWith(QStringLiteral("\\\\wsl.localhost\\"), Qt::CaseInsensitive);
 }
 
+QString formatFileSize(qint64 bytes)
+{
+    if (bytes < 0) {
+        return QStringLiteral("-");
+    }
+    if (bytes < 1024) {
+        return QStringLiteral("%1 B").arg(bytes);
+    }
+    const double kib = static_cast<double>(bytes) / 1024.0;
+    if (kib < 1024.0) {
+        return QStringLiteral("%1 KiB").arg(kib, 0, 'f', 1);
+    }
+    const double mib = kib / 1024.0;
+    if (mib < 1024.0) {
+        return QStringLiteral("%1 MiB").arg(mib, 0, 'f', 1);
+    }
+    return QStringLiteral("%1 GiB").arg(mib / 1024.0, 0, 'f', 2);
+}
+
+QString taskVideoFileName(const QString &taskId)
+{
+    return QStringLiteral("%1.mp4").arg(taskId.trimmed());
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setupUi();
+    loadPersistentState();
     connectSignals();
 
     QString error;
@@ -173,7 +211,7 @@ void MainWindow::setupUi()
         });
 }
 
-void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs)
+void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs, const QString &downloadDirectory)
 {
     if (m_smokeTestEnabled) {
         return;
@@ -181,7 +219,16 @@ void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs)
 
     m_smokeTestEnabled = true;
     m_smokeTestCompleted = false;
+    m_smokeRequiresDownload = !downloadDirectory.trimmed().isEmpty();
     m_smokeTestTaskId.clear();
+
+    if (m_smokeRequiresDownload) {
+        QString error;
+        if (!setDownloadDirectory(downloadDirectory, &error)) {
+            finishSmokeTest(false, error);
+            return;
+        }
+    }
 
     appendDiagnostic(QStringLiteral("Smoke test scheduled."));
     m_smokeTestTimeoutTimer->start(timeoutMs);
@@ -192,7 +239,7 @@ void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs)
     });
 }
 
-void MainWindow::startTaskMonitorSmoke(const QString &taskId, int timeoutMs)
+void MainWindow::startTaskMonitorSmoke(const QString &taskId, int timeoutMs, const QString &downloadDirectory)
 {
     if (m_smokeTestEnabled) {
         return;
@@ -206,8 +253,17 @@ void MainWindow::startTaskMonitorSmoke(const QString &taskId, int timeoutMs)
 
     m_smokeTestEnabled = true;
     m_smokeTestCompleted = false;
+    m_smokeRequiresDownload = !downloadDirectory.trimmed().isEmpty();
     m_smokeTestTaskId = trimmedTaskId;
     m_activeTaskIds.insert(trimmedTaskId);
+
+    if (m_smokeRequiresDownload) {
+        QString error;
+        if (!setDownloadDirectory(downloadDirectory, &error)) {
+            finishSmokeTest(false, error);
+            return;
+        }
+    }
 
     appendDiagnostic(QStringLiteral("Smoke task monitor scheduled: %1").arg(trimmedTaskId));
     m_smokeTestTimeoutTimer->start(timeoutMs);
@@ -312,6 +368,16 @@ QWidget *MainWindow::buildConfigPanel()
     m_wslDistroEdit = new QLineEdit(QString::fromLatin1(kDefaultDistro), panel);
     form->addRow(QStringLiteral("WSL Distro"), m_wslDistroEdit);
 
+    auto *downloadDirectoryLayout = new QHBoxLayout();
+    downloadDirectoryLayout->setContentsMargins(0, 0, 0, 0);
+    m_downloadDirectoryEdit = new QLineEdit(panel);
+    m_downloadDirectoryEdit->setReadOnly(true);
+    m_downloadDirectoryEdit->setPlaceholderText(QStringLiteral("Choose a Windows folder for downloaded videos"));
+    m_chooseDownloadDirectoryButton = new QPushButton(QStringLiteral("Choose"), panel);
+    downloadDirectoryLayout->addWidget(m_downloadDirectoryEdit, 1);
+    downloadDirectoryLayout->addWidget(m_chooseDownloadDirectoryButton);
+    form->addRow(QStringLiteral("Download Directory"), downloadDirectoryLayout);
+
     m_outputDirectoryEdit = new QLineEdit(panel);
     m_outputDirectoryEdit->setReadOnly(true);
     m_outputDirectoryEdit->setPlaceholderText(QStringLiteral("Waiting for a succeeded task or selected result"));
@@ -323,9 +389,13 @@ QWidget *MainWindow::buildConfigPanel()
     layout->addWidget(resultsLabel);
 
     m_resultsTable = new QTableWidget(panel);
-    m_resultsTable->setColumnCount(4);
+    m_resultsTable->setColumnCount(5);
     m_resultsTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Task ID"), QStringLiteral("Output Path"), QStringLiteral("Exists"), QStringLiteral("Created")});
+        {QStringLiteral("Task ID"),
+         QStringLiteral("Output Path"),
+         QStringLiteral("Exists"),
+         QStringLiteral("Download"),
+         QStringLiteral("Created")});
     m_resultsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_resultsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_resultsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -336,7 +406,38 @@ QWidget *MainWindow::buildConfigPanel()
     m_resultsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_resultsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_resultsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_resultsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     layout->addWidget(m_resultsTable, 1);
+
+    m_downloadSelectedButton = new QPushButton(QStringLiteral("Download Selected"), panel);
+    layout->addWidget(m_downloadSelectedButton);
+
+    auto *videosLabel = new QLabel(QStringLiteral("Videos"), panel);
+    layout->addWidget(videosLabel);
+
+    m_videosTable = new QTableWidget(panel);
+    m_videosTable->setColumnCount(5);
+    m_videosTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Task ID"),
+         QStringLiteral("Local File"),
+         QStringLiteral("Size"),
+         QStringLiteral("Exists"),
+         QStringLiteral("Downloaded")});
+    m_videosTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_videosTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_videosTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_videosTable->setAlternatingRowColors(true);
+    m_videosTable->verticalHeader()->setVisible(false);
+    m_videosTable->horizontalHeader()->setStretchLastSection(true);
+    m_videosTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_videosTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_videosTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_videosTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_videosTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    layout->addWidget(m_videosTable, 1);
+
+    m_playVideoButton = new QPushButton(QStringLiteral("Play Selected"), panel);
+    layout->addWidget(m_playVideoButton);
 
     m_openOutputDirectoryButton = new QPushButton(QStringLiteral("Open Output Directory"), panel);
     layout->addWidget(m_openOutputDirectoryButton);
@@ -358,9 +459,15 @@ void MainWindow::connectSignals()
     connect(m_applyServiceUrlButton, &QPushButton::clicked, this, &MainWindow::applyServiceUrl);
     connect(m_serviceUrlEdit, &QLineEdit::returnPressed, this, &MainWindow::applyServiceUrl);
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::sendPrompt);
+    connect(m_chooseDownloadDirectoryButton, &QPushButton::clicked, this, &MainWindow::chooseDownloadDirectory);
+    connect(m_downloadSelectedButton, &QPushButton::clicked, this, &MainWindow::downloadSelectedResult);
+    connect(m_playVideoButton, &QPushButton::clicked, this, &MainWindow::playSelectedVideo);
     connect(m_pollTimer, &QTimer::timeout, this, &MainWindow::pollActiveTasks);
     connect(m_tasksTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::updateOutputDirectoryField);
     connect(m_resultsTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::updateOutputDirectoryField);
+    connect(m_videosTable, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *) {
+        playSelectedVideo();
+    });
     connect(m_wslDistroEdit, &QLineEdit::textChanged, this, &MainWindow::updateOutputDirectoryField);
     connect(m_openOutputDirectoryButton, &QPushButton::clicked, this, &MainWindow::openSelectedOutputDirectory);
 
@@ -369,6 +476,7 @@ void MainWindow::connectSignals()
     connect(&m_apiClient, &ApiClient::taskFetched, this, &MainWindow::onTaskFetched);
     connect(&m_apiClient, &ApiClient::tasksFetched, this, &MainWindow::onTasksFetched);
     connect(&m_apiClient, &ApiClient::resultsFetched, this, &MainWindow::onResultsFetched);
+    connect(&m_apiClient, &ApiClient::resultDownloaded, this, &MainWindow::onResultDownloaded);
     connect(&m_apiClient, &ApiClient::requestFailed, this, &MainWindow::onRequestFailed);
 }
 
@@ -451,6 +559,44 @@ void MainWindow::updateOutputDirectoryField()
     }
 }
 
+void MainWindow::chooseDownloadDirectory()
+{
+    const QString startDirectory = configuredDownloadDirectory().isEmpty()
+        ? QDir::homePath()
+        : configuredDownloadDirectory();
+    const QString directory = QFileDialog::getExistingDirectory(
+        this,
+        QStringLiteral("Choose Download Directory"),
+        startDirectory);
+    if (directory.isEmpty()) {
+        return;
+    }
+
+    QString error;
+    if (!setDownloadDirectory(directory, &error)) {
+        appendDiagnostic(error);
+        appendChatMessage(QStringLiteral("System"), error);
+        showUserNotice(error);
+        return;
+    }
+
+    appendDiagnostic(QStringLiteral("Download directory set: %1").arg(configuredDownloadDirectory()));
+    showUserNotice(QStringLiteral("Download directory updated."));
+}
+
+void MainWindow::downloadSelectedResult()
+{
+    const QString taskId = selectedResultTaskId();
+    if (taskId.isEmpty() || !m_results.contains(taskId)) {
+        const QString message = QStringLiteral("Select a result with a download URL first.");
+        appendDiagnostic(message);
+        showUserNotice(message);
+        return;
+    }
+
+    startResultDownloadForResult(m_results.value(taskId), QStringLiteral("manual result download"));
+}
+
 void MainWindow::openSelectedOutputDirectory()
 {
     QString error;
@@ -483,6 +629,38 @@ void MainWindow::openSelectedOutputDirectory()
 
     appendDiagnostic(QStringLiteral("Opened output directory: %1").arg(directory));
     showUserNotice(QStringLiteral("Opened output directory."));
+}
+
+void MainWindow::playSelectedVideo()
+{
+    const QString taskId = selectedVideoTaskId();
+    if (taskId.isEmpty() || !m_downloadedVideos.contains(taskId)) {
+        const QString message = QStringLiteral("Select a downloaded video first.");
+        appendDiagnostic(message);
+        showUserNotice(message);
+        return;
+    }
+
+    const DownloadedVideo video = m_downloadedVideos.value(taskId);
+    if (!QFileInfo::exists(video.localPath)) {
+        const QString message = QStringLiteral("Local video file does not exist: %1").arg(video.localPath);
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        refreshVideosTable();
+        return;
+    }
+
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(video.localPath))) {
+        const QString message = QStringLiteral("Failed to open video with the Windows default player: %1").arg(video.localPath);
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        return;
+    }
+
+    appendDiagnostic(QStringLiteral("Opened local video: %1").arg(video.localPath));
+    showUserNotice(QStringLiteral("Opened video."));
 }
 
 void MainWindow::onHealthChecked(const TaskModels::HealthResponse &health)
@@ -551,10 +729,28 @@ void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
             if (!task.outputPath.isEmpty()) {
                 summary += QStringLiteral(" | output_path=%1").arg(task.outputPath);
             }
+            if (!task.downloadUrl.isEmpty()) {
+                summary += QStringLiteral(" | download_url=%1").arg(task.downloadUrl);
+            }
             if (!task.errorMessage.isEmpty()) {
                 summary += QStringLiteral(" | error_message=%1").arg(task.errorMessage);
             }
+            if (m_smokeRequiresDownload) {
+                if (task.status != QStringLiteral("succeeded")) {
+                    finishSmokeTest(false, summary);
+                    return;
+                }
+                if (!startResultDownloadForTask(task, QStringLiteral("smoke download"))) {
+                    finishSmokeTest(false, QStringLiteral("%1 | download did not start").arg(summary));
+                }
+                return;
+            }
             finishSmokeTest(true, summary);
+        }
+
+        if (task.status == QStringLiteral("succeeded") && !task.downloadUrl.isEmpty()
+            && !m_downloadedVideos.contains(task.taskId)) {
+            startResultDownloadForTask(task, QStringLiteral("completed task auto download"));
         }
     } else {
         startPollingIfNeeded();
@@ -589,12 +785,60 @@ void MainWindow::onResultsFetched(const TaskModels::ResultListResponse &results)
     appendDiagnostic(QStringLiteral("Loaded %1 result item(s).").arg(results.items.size()));
 }
 
+void MainWindow::onResultDownloaded(const ResultDownload &download)
+{
+    m_downloadInFlightTaskIds.remove(download.taskId);
+
+    DownloadedVideo video;
+    video.taskId = download.taskId;
+    video.prompt = promptForTaskId(download.taskId);
+    video.localPath = download.localPath;
+    video.downloadUrl = download.url.toString();
+    if (m_tasks.contains(download.taskId)) {
+        video.sourceOutputPath = m_tasks.value(download.taskId).outputPath;
+    } else if (m_results.contains(download.taskId)) {
+        video.sourceOutputPath = m_results.value(download.taskId).outputPath;
+    }
+    video.createTimeRaw = createTimeRawForTaskId(download.taskId);
+    video.createTime = createTimeForTaskId(download.taskId);
+    video.downloadedAt = QDateTime::currentDateTimeUtc();
+    video.downloadedAtRaw = video.downloadedAt.toString(Qt::ISODateWithMs);
+    video.fileSize = QFileInfo(download.localPath).size();
+    if (video.fileSize <= 0) {
+        video.fileSize = download.fileSize;
+    }
+
+    syncDownloadedVideo(video);
+    saveDownloadedVideos();
+    refreshVideosTable();
+
+    const QString message = QStringLiteral("Downloaded video %1 to %2 (%3)")
+                                .arg(download.taskId, download.localPath, formatFileSize(video.fileSize));
+    appendDiagnostic(message);
+    appendChatMessage(QStringLiteral("System"), message);
+    showUserNotice(QStringLiteral("Video downloaded: %1").arg(download.taskId));
+
+    if (m_smokeTestEnabled && m_smokeRequiresDownload && download.taskId == m_smokeTestTaskId) {
+        finishSmokeTest(
+            true,
+            QStringLiteral("Smoke test downloaded result: %1 | bytes=%2 | index=%3")
+                .arg(download.localPath)
+                .arg(video.fileSize)
+                .arg(videoIndexPath()));
+    }
+}
+
 void MainWindow::onRequestFailed(const RequestFailure &failure)
 {
     if (failure.kind == RequestKind::FetchTask) {
         const QString taskId = failure.url.path().section(QLatin1Char('/'), -1);
         if (!taskId.isEmpty()) {
             m_inFlightTaskIds.remove(taskId);
+        }
+    } else if (failure.kind == RequestKind::DownloadResult) {
+        const QString taskId = failure.url.path().section(QLatin1Char('/'), -2, -2);
+        if (!taskId.isEmpty()) {
+            m_downloadInFlightTaskIds.remove(taskId);
         }
     }
 
@@ -625,7 +869,10 @@ void MainWindow::onRequestFailed(const RequestFailure &failure)
 
     const bool createFailure = m_smokeTestTaskId.isEmpty() && failure.kind == RequestKind::CreateTask;
     const bool pollFailure = !m_smokeTestTaskId.isEmpty() && failure.kind == RequestKind::FetchTask;
-    if (createFailure || pollFailure) {
+    const bool downloadFailure = m_smokeRequiresDownload
+        && failure.kind == RequestKind::DownloadResult
+        && failure.url.path().section(QLatin1Char('/'), -2, -2) == m_smokeTestTaskId;
+    if (createFailure || pollFailure || downloadFailure) {
         finishSmokeTest(false, message);
     }
 }
@@ -756,12 +1003,15 @@ void MainWindow::refreshResultsTable()
         auto *pathItem = new QTableWidgetItem(result.outputPath);
         pathItem->setToolTip(result.outputPath);
         auto *existsItem = new QTableWidgetItem(result.outputExists ? QStringLiteral("true") : QStringLiteral("false"));
+        auto *downloadItem = new QTableWidgetItem(result.downloadUrl.isEmpty() ? QStringLiteral("-") : QStringLiteral("ready"));
+        downloadItem->setToolTip(result.downloadUrl);
         auto *createdItem = new QTableWidgetItem(formatTimestamp(result.createTime, result.createTimeRaw));
 
         m_resultsTable->setItem(row, 0, taskIdItem);
         m_resultsTable->setItem(row, 1, pathItem);
         m_resultsTable->setItem(row, 2, existsItem);
-        m_resultsTable->setItem(row, 3, createdItem);
+        m_resultsTable->setItem(row, 3, downloadItem);
+        m_resultsTable->setItem(row, 4, createdItem);
     }
 
     if (!preservedTaskId.isEmpty()) {
@@ -769,6 +1019,49 @@ void MainWindow::refreshResultsTable()
             QTableWidgetItem *item = m_resultsTable->item(row, 0);
             if (item != nullptr && item->data(Qt::UserRole).toString() == preservedTaskId) {
                 m_resultsTable->selectRow(row);
+                break;
+            }
+        }
+    }
+}
+
+void MainWindow::refreshVideosTable()
+{
+    const QString preservedTaskId = selectedVideoTaskId();
+    QList<DownloadedVideo> videos = m_downloadedVideos.values();
+
+    std::sort(videos.begin(), videos.end(), [](const DownloadedVideo &left, const DownloadedVideo &right) {
+        return newerDateTimeFirst(left.downloadedAt, left.downloadedAtRaw, right.downloadedAt, right.downloadedAtRaw);
+    });
+
+    m_videosTable->setRowCount(videos.size());
+    for (int row = 0; row < videos.size(); ++row) {
+        const DownloadedVideo &video = videos.at(row);
+        const bool exists = QFileInfo::exists(video.localPath);
+        const qint64 fileSize = exists ? QFileInfo(video.localPath).size() : video.fileSize;
+
+        auto *taskIdItem = new QTableWidgetItem(video.taskId);
+        taskIdItem->setData(Qt::UserRole, video.taskId);
+        taskIdItem->setToolTip(video.prompt);
+        auto *pathItem = new QTableWidgetItem(video.localPath);
+        pathItem->setToolTip(video.localPath);
+        auto *sizeItem = new QTableWidgetItem(formatFileSize(fileSize));
+        sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto *existsItem = new QTableWidgetItem(exists ? QStringLiteral("true") : QStringLiteral("false"));
+        auto *downloadedItem = new QTableWidgetItem(formatTimestamp(video.downloadedAt, video.downloadedAtRaw));
+
+        m_videosTable->setItem(row, 0, taskIdItem);
+        m_videosTable->setItem(row, 1, pathItem);
+        m_videosTable->setItem(row, 2, sizeItem);
+        m_videosTable->setItem(row, 3, existsItem);
+        m_videosTable->setItem(row, 4, downloadedItem);
+    }
+
+    if (!preservedTaskId.isEmpty()) {
+        for (int row = 0; row < m_videosTable->rowCount(); ++row) {
+            QTableWidgetItem *item = m_videosTable->item(row, 0);
+            if (item != nullptr && item->data(Qt::UserRole).toString() == preservedTaskId) {
+                m_videosTable->selectRow(row);
                 break;
             }
         }
@@ -792,6 +1085,11 @@ void MainWindow::syncResultItem(const TaskModels::ResultItem &result)
     updateOutputDirectoryField();
 }
 
+void MainWindow::syncDownloadedVideo(const DownloadedVideo &video)
+{
+    m_downloadedVideos.insert(video.taskId, video);
+}
+
 QString MainWindow::selectedTaskId() const
 {
     const QModelIndexList rows = m_tasksTable->selectionModel() != nullptr
@@ -813,6 +1111,18 @@ QString MainWindow::selectedResultTaskId() const
         return {};
     }
     QTableWidgetItem *item = m_resultsTable->item(rows.first().row(), 0);
+    return item != nullptr ? item->data(Qt::UserRole).toString() : QString{};
+}
+
+QString MainWindow::selectedVideoTaskId() const
+{
+    const QModelIndexList rows = m_videosTable->selectionModel() != nullptr
+        ? m_videosTable->selectionModel()->selectedRows()
+        : QModelIndexList{};
+    if (rows.isEmpty()) {
+        return {};
+    }
+    QTableWidgetItem *item = m_videosTable->item(rows.first().row(), 0);
     return item != nullptr ? item->data(Qt::UserRole).toString() : QString{};
 }
 
@@ -873,6 +1183,279 @@ void MainWindow::stopPollingIfIdle()
     }
 }
 
+void MainWindow::loadPersistentState()
+{
+    QSettings settings;
+    const QString downloadDirectory = settings.value(QString::fromLatin1(kDownloadDirectorySetting)).toString();
+    if (!downloadDirectory.trimmed().isEmpty()) {
+        m_downloadDirectoryEdit->setText(downloadDirectory.trimmed());
+    }
+
+    loadDownloadedVideos();
+    refreshVideosTable();
+}
+
+void MainWindow::loadDownloadedVideos()
+{
+    m_downloadedVideos.clear();
+
+    QFile file(videoIndexPath());
+    if (!file.exists()) {
+        return;
+    }
+    if (!file.open(QIODevice::ReadOnly)) {
+        appendDiagnostic(QStringLiteral("Failed to open local video index: %1").arg(file.errorString()));
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        appendDiagnostic(QStringLiteral("Failed to parse local video index: %1").arg(parseError.errorString()));
+        return;
+    }
+
+    const QJsonArray items = document.object().value(QStringLiteral("videos")).toArray();
+    for (const QJsonValue &value : items) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject object = value.toObject();
+        DownloadedVideo video;
+        video.taskId = object.value(QStringLiteral("task_id")).toString();
+        video.prompt = object.value(QStringLiteral("prompt")).toString();
+        video.localPath = object.value(QStringLiteral("local_path")).toString();
+        video.downloadUrl = object.value(QStringLiteral("download_url")).toString();
+        video.sourceOutputPath = object.value(QStringLiteral("source_output_path")).toString();
+        video.createTimeRaw = object.value(QStringLiteral("create_time")).toString();
+        video.downloadedAtRaw = object.value(QStringLiteral("downloaded_at")).toString();
+        video.createTime = TaskModels::parseTimestamp(video.createTimeRaw);
+        video.downloadedAt = TaskModels::parseTimestamp(video.downloadedAtRaw);
+        video.fileSize = static_cast<qint64>(object.value(QStringLiteral("file_size")).toDouble(-1));
+        if (!video.taskId.isEmpty() && !video.localPath.isEmpty()) {
+            m_downloadedVideos.insert(video.taskId, video);
+        }
+    }
+}
+
+void MainWindow::saveDownloadedVideos()
+{
+    QJsonArray videos;
+    QList<DownloadedVideo> sortedVideos = m_downloadedVideos.values();
+    std::sort(sortedVideos.begin(), sortedVideos.end(), [](const DownloadedVideo &left, const DownloadedVideo &right) {
+        return newerDateTimeFirst(left.downloadedAt, left.downloadedAtRaw, right.downloadedAt, right.downloadedAtRaw);
+    });
+
+    for (const DownloadedVideo &video : sortedVideos) {
+        videos.append(QJsonObject{
+            {QStringLiteral("task_id"), video.taskId},
+            {QStringLiteral("prompt"), video.prompt},
+            {QStringLiteral("local_path"), video.localPath},
+            {QStringLiteral("download_url"), video.downloadUrl},
+            {QStringLiteral("source_output_path"), video.sourceOutputPath},
+            {QStringLiteral("create_time"), video.createTimeRaw},
+            {QStringLiteral("downloaded_at"), video.downloadedAtRaw},
+            {QStringLiteral("file_size"), static_cast<double>(video.fileSize)},
+        });
+    }
+
+    const QString indexPath = videoIndexPath();
+    QSaveFile file(indexPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        appendDiagnostic(QStringLiteral("Failed to open local video index for writing: %1 | path=%2")
+                             .arg(file.errorString(), indexPath));
+        return;
+    }
+    file.write(QJsonDocument(QJsonObject{{QStringLiteral("videos"), videos}}).toJson(QJsonDocument::Indented));
+    if (!file.commit()) {
+        appendDiagnostic(QStringLiteral("Failed to write local video index: %1 | path=%2")
+                             .arg(file.errorString(), indexPath));
+        return;
+    }
+    appendDiagnostic(QStringLiteral("Saved local video index: %1").arg(indexPath));
+}
+
+QString MainWindow::videoIndexPath() const
+{
+    QString root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (root.isEmpty()) {
+        root = QCoreApplication::applicationDirPath();
+    }
+    QDir().mkpath(root);
+    return QDir(root).filePath(QString::fromLatin1(kVideoIndexFileName));
+}
+
+QString MainWindow::configuredDownloadDirectory() const
+{
+    return m_downloadDirectoryEdit != nullptr ? m_downloadDirectoryEdit->text().trimmed() : QString{};
+}
+
+bool MainWindow::setDownloadDirectory(const QString &directory, QString *error)
+{
+    const QString cleaned = directory.trimmed();
+    if (cleaned.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Download directory is empty.");
+        }
+        return false;
+    }
+
+    QDir dir(cleaned);
+    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Failed to create download directory: %1").arg(cleaned);
+        }
+        return false;
+    }
+
+    const QString absolutePath = QFileInfo(dir.absolutePath()).absoluteFilePath();
+    if (!QFileInfo(absolutePath).isDir()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Download path is not a directory: %1").arg(absolutePath);
+        }
+        return false;
+    }
+
+    if (m_downloadDirectoryEdit != nullptr) {
+        m_downloadDirectoryEdit->setText(absolutePath);
+    }
+    QSettings settings;
+    settings.setValue(QString::fromLatin1(kDownloadDirectorySetting), absolutePath);
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
+}
+
+bool MainWindow::ensureDownloadDirectory(QString &directory)
+{
+    QString configured = configuredDownloadDirectory();
+    if (configured.isEmpty()) {
+        configured = QFileDialog::getExistingDirectory(
+            this,
+            QStringLiteral("Choose Download Directory"),
+            QDir::homePath());
+        if (configured.isEmpty()) {
+            appendDiagnostic(QStringLiteral("Download canceled because no local directory was selected."));
+            return false;
+        }
+    }
+
+    QString error;
+    if (!setDownloadDirectory(configured, &error)) {
+        appendDiagnostic(error);
+        appendChatMessage(QStringLiteral("System"), error);
+        showUserNotice(error);
+        return false;
+    }
+
+    directory = configuredDownloadDirectory();
+    return true;
+}
+
+QString MainWindow::localVideoPathForTask(const QString &taskId) const
+{
+    const QString directory = configuredDownloadDirectory();
+    if (directory.isEmpty()) {
+        return {};
+    }
+    return QDir(directory).filePath(taskVideoFileName(taskId));
+}
+
+QString MainWindow::downloadUrlForTaskId(const QString &taskId) const
+{
+    if (m_tasks.contains(taskId) && !m_tasks.value(taskId).downloadUrl.isEmpty()) {
+        return m_tasks.value(taskId).downloadUrl;
+    }
+    if (m_results.contains(taskId)) {
+        return m_results.value(taskId).downloadUrl;
+    }
+    return {};
+}
+
+QString MainWindow::promptForTaskId(const QString &taskId) const
+{
+    if (m_tasks.contains(taskId)) {
+        return m_tasks.value(taskId).prompt;
+    }
+    return {};
+}
+
+QString MainWindow::createTimeRawForTaskId(const QString &taskId) const
+{
+    if (m_tasks.contains(taskId)) {
+        return m_tasks.value(taskId).createTimeRaw;
+    }
+    if (m_results.contains(taskId)) {
+        return m_results.value(taskId).createTimeRaw;
+    }
+    return {};
+}
+
+QDateTime MainWindow::createTimeForTaskId(const QString &taskId) const
+{
+    if (m_tasks.contains(taskId)) {
+        return m_tasks.value(taskId).createTime;
+    }
+    if (m_results.contains(taskId)) {
+        return m_results.value(taskId).createTime;
+    }
+    return {};
+}
+
+bool MainWindow::startResultDownloadForTask(const TaskModels::TaskDetail &task, const QString &reason)
+{
+    if (m_downloadInFlightTaskIds.contains(task.taskId)) {
+        appendDiagnostic(QStringLiteral("Download already in progress for task %1.").arg(task.taskId));
+        return true;
+    }
+    if (task.downloadUrl.isEmpty()) {
+        const QString message = QStringLiteral("Task %1 has no download URL yet.").arg(task.taskId);
+        appendDiagnostic(message);
+        showUserNotice(message);
+        return false;
+    }
+
+    QString directory;
+    if (!ensureDownloadDirectory(directory)) {
+        return false;
+    }
+
+    const QString localPath = QDir(directory).filePath(taskVideoFileName(task.taskId));
+    m_downloadInFlightTaskIds.insert(task.taskId);
+    appendDiagnostic(QStringLiteral("Downloading task %1 to %2 (%3).").arg(task.taskId, localPath, reason));
+    showUserNotice(QStringLiteral("Downloading video: %1").arg(task.taskId));
+    m_apiClient.downloadResult(task.taskId, QUrl(task.downloadUrl), localPath);
+    return true;
+}
+
+bool MainWindow::startResultDownloadForResult(const TaskModels::ResultItem &result, const QString &reason)
+{
+    if (m_downloadInFlightTaskIds.contains(result.taskId)) {
+        appendDiagnostic(QStringLiteral("Download already in progress for result %1.").arg(result.taskId));
+        return true;
+    }
+    if (result.downloadUrl.isEmpty()) {
+        const QString message = QStringLiteral("Result %1 has no download URL.").arg(result.taskId);
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        return false;
+    }
+
+    QString directory;
+    if (!ensureDownloadDirectory(directory)) {
+        return false;
+    }
+
+    const QString localPath = QDir(directory).filePath(taskVideoFileName(result.taskId));
+    m_downloadInFlightTaskIds.insert(result.taskId);
+    appendDiagnostic(QStringLiteral("Downloading result %1 to %2 (%3).").arg(result.taskId, localPath, reason));
+    showUserNotice(QStringLiteral("Downloading video: %1").arg(result.taskId));
+    m_apiClient.downloadResult(result.taskId, QUrl(result.downloadUrl), localPath);
+    return true;
+}
+
 TaskModels::TaskDetail MainWindow::summaryToDetail(const TaskModels::TaskSummary &task) const
 {
     TaskModels::TaskDetail detail;
@@ -894,6 +1477,7 @@ TaskModels::TaskDetail MainWindow::summaryToDetail(const TaskModels::TaskSummary
         detail.progressCurrent = existing.progressCurrent;
         detail.progressTotal = existing.progressTotal;
         detail.progressPercent = existing.progressPercent;
+        detail.downloadUrl = existing.downloadUrl;
     }
     return detail;
 }

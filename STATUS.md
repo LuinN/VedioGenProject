@@ -47,7 +47,7 @@
 - `nvcc` 当前仍不在 PATH
 - 当前工作区已经可以启动服务并跑通一次真实 `t2v` 生成
 - 当前未完成项主要剩在：
-  - Windows 客户端尚未接入 `download_url` 并把视频保存到 Windows 本地目录
+  - Windows 客户端系统播放器打开动作仍需在真实桌面会话手动复验
   - 当前 Windows agent 会话对 `\\wsl$` 输出目录访问仍被拒绝，但这条路径已不再是唯一结果获取方式
 
 ### Windows Qt 客户端
@@ -74,8 +74,13 @@
   - `progress_total`
   - `progress_percent`
 - 任务列表现已展示阶段与采样进度
+- 已接入 `download_url` / `GET /api/results/{task_id}/file`，可把成功结果保存为 Windows 本地 `<task_id>.mp4`
+- 已支持统一下载目录，目录配置写入 `QSettings`
+- 已支持本地 Videos 列表，下载索引持久化到 `QStandardPaths::AppDataLocation/downloaded_videos.json`
+- 已支持双击视频或点击 `Play Selected` 调用 Windows 默认播放器
 - 命令行 smoke test 默认等待窗口已提升到 60 分钟，并支持 `--smoke-timeout-ms`
 - 命令行 smoke test 已支持 `--smoke-task-id`，可以挂到已有任务上继续轮询，不会重复创建服务端任务
+- 命令行 smoke test 已支持 `--smoke-download-dir`，可验证终态成功后下载 mp4 到本地目录
 - Windows 原生编译已通过
 - Windows 原生启动已通过
 - Windows smoke test 已真实打到本地 FastAPI 服务
@@ -97,6 +102,19 @@
     - `GET /api/results/{task_id}/file` 已成功下载到 `/tmp/18439c7f.mp4`
     - `ffprobe` 确认下载文件仍为有效 `h264` 视频
   - 这条新链路用于让 Windows 客户端把视频保存到本地目录，不再依赖 `\\wsl$` 共享路径
+
+- Windows Qt 客户端已完成结果下载与本地视频列表对接：
+  - `TaskDetail` / `ResultItem` 已解析 `download_url`
+  - `ApiClient` 已新增结果下载请求，使用 `QSaveFile` 原子写入本地 mp4
+  - UI 已新增下载目录选择、`Download Selected`、本地 `Videos` 列表与 `Play Selected`
+  - 新任务成功且带 `download_url` 时会自动下载到配置的 Windows 本地目录
+  - 历史结果不批量自动下载，可手动选择结果后下载
+  - `--smoke-download-dir` 已验证任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 成功下载到：
+    - `code/client/qt_wan_chat/build/smoke_downloads/18439c7f-d91b-42a4-a5f3-2e90624587f8.mp4`
+  - 本地视频索引已真实写入：
+    - `C:/Users/37545/AppData/Roaming/VideoGenProject/qt_wan_chat/downloaded_videos.json`
+  - 下载文件大小：
+    - `8060815` bytes
 
 - Windows Qt 客户端继续对齐服务端最新任务详情契约：
   - `TaskDetail` 已解析 `status_message` / `progress_current` / `progress_total` / `progress_percent`

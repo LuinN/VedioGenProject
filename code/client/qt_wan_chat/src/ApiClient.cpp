@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSaveFile>
 #include <QUrlQuery>
 
 namespace {
@@ -44,6 +45,8 @@ QString requestKindName(RequestKind kind)
         return QStringLiteral("GET /api/tasks");
     case RequestKind::FetchResults:
         return QStringLiteral("GET /api/results");
+    case RequestKind::DownloadResult:
+        return QStringLiteral("GET /api/results/{task_id}/file");
     }
     return QStringLiteral("Unknown request");
 }
@@ -148,6 +151,43 @@ void ApiClient::fetchResults(int limit)
     sendGetRequest(RequestKind::FetchResults, url);
 }
 
+void ApiClient::downloadResult(const QString &taskId, const QUrl &downloadUrl, const QString &localPath)
+{
+    if (taskId.trimmed().isEmpty()) {
+        emitInvalidBaseUrlFailure(RequestKind::DownloadResult, QStringLiteral("Task id is empty."));
+        return;
+    }
+    if (!downloadUrl.isValid() || downloadUrl.scheme().isEmpty() || downloadUrl.host().isEmpty()) {
+        RequestFailure failure;
+        failure.kind = RequestKind::DownloadResult;
+        failure.stableCode = QStringLiteral("invalid_download_url");
+        failure.userMessage = QStringLiteral("The result download URL is invalid.");
+        failure.details = downloadUrl.toString();
+        failure.url = downloadUrl;
+        emit requestFailed(failure);
+        return;
+    }
+    if (localPath.trimmed().isEmpty()) {
+        RequestFailure failure;
+        failure.kind = RequestKind::DownloadResult;
+        failure.stableCode = QStringLiteral("invalid_local_path");
+        failure.userMessage = QStringLiteral("The local save path is empty.");
+        failure.url = downloadUrl;
+        emit requestFailed(failure);
+        return;
+    }
+
+    QNetworkRequest request(downloadUrl);
+    request.setRawHeader("Accept", "video/mp4");
+
+    QNetworkReply *reply = m_network.get(request);
+    reply->setProperty("taskId", taskId.trimmed());
+    reply->setProperty("localPath", localPath.trimmed());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        handleReply(RequestKind::DownloadResult, reply);
+    });
+}
+
 void ApiClient::sendGetRequest(RequestKind kind, const QUrl &url)
 {
     QNetworkRequest request(url);
@@ -186,6 +226,47 @@ void ApiClient::handleReply(RequestKind kind, QNetworkReply *reply)
 
     if (statusCode < kSuccessStatusLowerBound || statusCode >= kSuccessStatusUpperBound) {
         emit requestFailed(buildHttpFailure(kind, reply, body));
+        reply->deleteLater();
+        return;
+    }
+
+    if (kind == RequestKind::DownloadResult) {
+        const QString localPath = reply->property("localPath").toString();
+        QSaveFile file(localPath);
+        if (!file.open(QIODevice::WriteOnly)) {
+            emit requestFailed(
+                buildDownloadSaveFailure(
+                    reply,
+                    body,
+                    QStringLiteral("Failed to open local file for writing: %1").arg(file.errorString())));
+            reply->deleteLater();
+            return;
+        }
+        if (file.write(body) != body.size()) {
+            emit requestFailed(
+                buildDownloadSaveFailure(
+                    reply,
+                    body,
+                    QStringLiteral("Failed to write complete video file: %1").arg(file.errorString())));
+            reply->deleteLater();
+            return;
+        }
+        if (!file.commit()) {
+            emit requestFailed(
+                buildDownloadSaveFailure(
+                    reply,
+                    body,
+                    QStringLiteral("Failed to commit local video file: %1").arg(file.errorString())));
+            reply->deleteLater();
+            return;
+        }
+
+        ResultDownload download;
+        download.taskId = reply->property("taskId").toString();
+        download.localPath = localPath;
+        download.fileSize = body.size();
+        download.url = reply->request().url();
+        emit resultDownloaded(download);
         reply->deleteLater();
         return;
     }
@@ -329,3 +410,15 @@ RequestFailure ApiClient::buildParseFailure(RequestKind kind, QNetworkReply *rep
     return failure;
 }
 
+RequestFailure ApiClient::buildDownloadSaveFailure(QNetworkReply *reply, const QByteArray &body, const QString &details) const
+{
+    RequestFailure failure;
+    failure.kind = RequestKind::DownloadResult;
+    failure.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    failure.stableCode = QStringLiteral("download_save_error");
+    failure.userMessage = QStringLiteral("The result video could not be saved locally.");
+    failure.details = details;
+    failure.rawBody = body;
+    failure.url = reply->request().url();
+    return failure;
+}

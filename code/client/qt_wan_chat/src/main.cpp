@@ -20,11 +20,13 @@ constexpr int kDefaultSmokeTimeoutMs = 60 * 60 * 1000;
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+    app.setOrganizationName(QStringLiteral("VideoGenProject"));
     app.setApplicationName(QStringLiteral("qt_wan_chat"));
     app.setApplicationDisplayName(QStringLiteral("Wan Chat Client MVP"));
 
     qRegisterMetaType<RequestKind>("RequestKind");
     qRegisterMetaType<RequestFailure>("RequestFailure");
+    qRegisterMetaType<ResultDownload>("ResultDownload");
     qRegisterMetaType<TaskModels::HealthResponse>("TaskModels::HealthResponse");
     qRegisterMetaType<TaskModels::TaskSummary>("TaskModels::TaskSummary");
     qRegisterMetaType<TaskModels::TaskDetail>("TaskModels::TaskDetail");
@@ -48,9 +50,14 @@ int main(int argc, char *argv[])
         QStringLiteral("Maximum smoke-test wait time in milliseconds."),
         QStringLiteral("milliseconds"),
         QString::number(kDefaultSmokeTimeoutMs));
+    QCommandLineOption smokeDownloadDirOption(
+        QStringList{QStringLiteral("smoke-download-dir")},
+        QStringLiteral("Download the smoke-test result into this local Windows directory before exiting successfully."),
+        QStringLiteral("directory"));
     parser.addOption(smokePromptOption);
     parser.addOption(smokeTaskIdOption);
     parser.addOption(smokeTimeoutOption);
+    parser.addOption(smokeDownloadDirOption);
     parser.process(app);
 
     const bool hasSmokePrompt = parser.isSet(smokePromptOption);
@@ -74,6 +81,14 @@ int main(int argc, char *argv[])
     }
 
     MainWindow window;
+    const QString smokeDownloadDir = parser.value(smokeDownloadDirOption).trimmed();
+    if (!smokeDownloadDir.isEmpty() && !hasSmokePrompt && !hasSmokeTaskId) {
+        QString error;
+        if (!window.setDownloadDirectory(smokeDownloadDir, &error)) {
+            QTextStream(stderr) << error << Qt::endl;
+            return 2;
+        }
+    }
     window.show();
 
     if (hasSmokePrompt || hasSmokeTaskId) {
@@ -88,12 +103,12 @@ int main(int argc, char *argv[])
             }
             app.exit(1);
         });
-        QTimer::singleShot(0, &window, [prompt, taskId, smokeTimeoutMs, hasSmokePrompt, &window]() {
+        QTimer::singleShot(0, &window, [prompt, taskId, smokeTimeoutMs, smokeDownloadDir, hasSmokePrompt, &window]() {
             if (hasSmokePrompt) {
-                window.startSmokeTest(prompt, smokeTimeoutMs);
+                window.startSmokeTest(prompt, smokeTimeoutMs, smokeDownloadDir);
                 return;
             }
-            window.startTaskMonitorSmoke(taskId, smokeTimeoutMs);
+            window.startTaskMonitorSmoke(taskId, smokeTimeoutMs, smokeDownloadDir);
         });
     }
 

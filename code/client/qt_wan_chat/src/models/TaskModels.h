@@ -41,6 +41,7 @@ struct TaskDetail : TaskSummary {
     int progressCurrent = -1;
     int progressTotal = -1;
     int progressPercent = -1;
+    QString downloadUrl;
 };
 
 struct TaskListResponse {
@@ -55,6 +56,7 @@ struct ResultItem {
     QString createTimeRaw;
     QDateTime createTime;
     bool outputExists = false;
+    QString downloadUrl;
 };
 
 struct ResultListResponse {
@@ -234,7 +236,8 @@ inline bool parseTaskDetailObject(const QJsonObject &object, TaskDetail &target,
         || !readOptionalNullableString(object, QStringLiteral("status_message"), target.statusMessage, error)
         || !readOptionalNullableInt(object, QStringLiteral("progress_current"), target.progressCurrent, error)
         || !readOptionalNullableInt(object, QStringLiteral("progress_total"), target.progressTotal, error)
-        || !readOptionalNullableInt(object, QStringLiteral("progress_percent"), target.progressPercent, error)) {
+        || !readOptionalNullableInt(object, QStringLiteral("progress_percent"), target.progressPercent, error)
+        || !readOptionalNullableString(object, QStringLiteral("download_url"), target.downloadUrl, error)) {
         return false;
     }
     return true;
@@ -245,7 +248,8 @@ inline bool parseResultItemObject(const QJsonObject &object, ResultItem &target,
     if (!requireString(object, QStringLiteral("task_id"), target.taskId, error)
         || !requireString(object, QStringLiteral("output_path"), target.outputPath, error)
         || !requireString(object, QStringLiteral("create_time"), target.createTimeRaw, error)
-        || !requireBool(object, QStringLiteral("output_exists"), target.outputExists, error)) {
+        || !requireBool(object, QStringLiteral("output_exists"), target.outputExists, error)
+        || !readOptionalNullableString(object, QStringLiteral("download_url"), target.downloadUrl, error)) {
         return false;
     }
 

@@ -13,6 +13,7 @@ enum class RequestKind {
     FetchTask,
     FetchTasks,
     FetchResults,
+    DownloadResult,
 };
 
 struct RequestFailure {
@@ -22,6 +23,13 @@ struct RequestFailure {
     QString userMessage;
     QString details;
     QByteArray rawBody;
+    QUrl url;
+};
+
+struct ResultDownload {
+    QString taskId;
+    QString localPath;
+    qint64 fileSize = 0;
     QUrl url;
 };
 
@@ -42,6 +50,7 @@ public:
     void fetchTask(const QString &taskId);
     void fetchTasks(int limit);
     void fetchResults(int limit);
+    void downloadResult(const QString &taskId, const QUrl &downloadUrl, const QString &localPath);
 
 signals:
     void healthChecked(const TaskModels::HealthResponse &health);
@@ -49,6 +58,7 @@ signals:
     void taskFetched(const TaskModels::TaskDetail &task);
     void tasksFetched(const TaskModels::TaskListResponse &tasks);
     void resultsFetched(const TaskModels::ResultListResponse &results);
+    void resultDownloaded(const ResultDownload &download);
     void requestFailed(const RequestFailure &failure);
 
 private:
@@ -59,6 +69,7 @@ private:
     RequestFailure buildNetworkFailure(RequestKind kind, class QNetworkReply *reply, const QByteArray &body) const;
     RequestFailure buildHttpFailure(RequestKind kind, class QNetworkReply *reply, const QByteArray &body) const;
     RequestFailure buildParseFailure(RequestKind kind, class QNetworkReply *reply, const QByteArray &body, const QString &details) const;
+    RequestFailure buildDownloadSaveFailure(class QNetworkReply *reply, const QByteArray &body, const QString &details) const;
 
     QUrl m_baseUrl;
     QNetworkAccessManager m_network;
@@ -66,4 +77,4 @@ private:
 
 Q_DECLARE_METATYPE(RequestKind)
 Q_DECLARE_METATYPE(RequestFailure)
-
+Q_DECLARE_METATYPE(ResultDownload)

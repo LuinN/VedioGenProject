@@ -18,27 +18,39 @@ nvcc                                                 missing
 
 - 服务端最小运行链路已经打通，并已真实生成 `result.mp4`
 - 当前剩余阻塞不在“能不能跑”，而在：
-  - Windows 客户端还没有接入新的 `download_url` / `GET /api/results/{task_id}/file`，因此还不能把视频保存到 Windows 本地目录
+  - Windows 客户端调用系统默认播放器播放本地视频仍需真实桌面会话手动复验
   - 当前 Windows agent 会话对 `\\wsl$` 输出目录访问仍被拒绝，但这条路径已不再是唯一结果获取方案
 - Windows 客户端代码已接入 `status_message` / `progress_percent` 展示
 - Windows 客户端已用真实任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 复验到 `status=succeeded` 和 `output_path`
 
-### 新增：服务端已提供视频下载端点，但 Windows 客户端尚未接入本地保存链路
+### 新增：客户端下载与本地持久视频列表已接入，播放动作仍需桌面复验
 
 当前服务端新增能力：
 
 - `GET /api/tasks/{task_id}` 与 `GET /api/results` 现在会返回 `download_url`
 - `GET /api/results/{task_id}/file` 会直接返回 `video/mp4`
 
-当前真实阻塞：
+当前客户端完成状态：
 
-- Windows Qt 客户端仍主要围绕 `output_path` / `\\wsl$` 路径工作
-- “选择本地目录 -> 下载视频 -> 保存到 Windows 文件夹” 这条客户端链路还没接上
+- Windows Qt 客户端已解析 `download_url`
+- 已实现“选择本地目录 -> 下载视频 -> 保存到 Windows 文件夹”
+- 已实现本地 `Videos` 列表与 `downloaded_videos.json` 持久索引
+- 已实现双击视频或点击 `Play Selected` 调用 Windows 默认播放器
 
-影响：
+真实验证：
 
-- 服务端已经不再要求 Windows 会话必须能访问 `\\wsl$`
-- 但客户端在完成对接前，用户仍不能从客户端直接把结果文件保存到本地目录
+- `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-download-dir=... --smoke-timeout-ms=10000`
+- 下载文件：
+  - `code/client/qt_wan_chat/build/smoke_downloads/18439c7f-d91b-42a4-a5f3-2e90624587f8.mp4`
+- 文件大小：
+  - `8060815` bytes
+- 持久索引：
+  - `C:/Users/37545/AppData/Roaming/VideoGenProject/qt_wan_chat/downloaded_videos.json`
+
+当前剩余问题：
+
+- 当前 agent 会话不做 GUI 播放器启动断言
+- 需要在真实 Windows 桌面中点击本地视频列表的 `Play Selected` 或双击条目，确认默认播放器能打开 mp4
 
 ### 1. WSL FastAPI 服务在 Windows 客户端轮询期间掉线，后台模式已补上但仍待真实联调复验
 

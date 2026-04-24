@@ -67,11 +67,30 @@ Observed client output:
 Smoke test reached terminal state: succeeded | output_path=/home/liupengkun/VedioGenProject/code/server/wan_local_service/outputs/18439c7f-d91b-42a4-a5f3-2e90624587f8/result.mp4
 ```
 
+Windows client download command after `download_url` was added:
+
+```powershell
+qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-download-dir=D:\Projects\VideoGenProject\code\client\qt_wan_chat\build\smoke_downloads --smoke-timeout-ms=10000
+```
+
+Observed download output:
+
+```text
+Smoke test downloaded result: D:/Projects/VideoGenProject/code/client/qt_wan_chat/build/smoke_downloads/18439c7f-d91b-42a4-a5f3-2e90624587f8.mp4 | bytes=8060815 | index=C:/Users/37545/AppData/Roaming/VideoGenProject/qt_wan_chat/downloaded_videos.json
+```
+
+Windows local result:
+
+- mp4 saved to `D:\Projects\VideoGenProject\code\client\qt_wan_chat\build\smoke_downloads\18439c7f-d91b-42a4-a5f3-2e90624587f8.mp4`
+- local metadata saved to `C:\Users\37545\AppData\Roaming\VideoGenProject\qt_wan_chat\downloaded_videos.json`
+- file size: `8060815` bytes
+
 Current Windows-side caveat:
 
 - `\\wsl$` access from the current Windows agent session still returns Access denied
 - the client now skips `QDir.exists()` pre-check for WSL UNC paths and hands them directly to `explorer.exe`
 - actual Explorer open success still needs verification in the real desktop session
+- local mp4 playback through the Windows default player also needs real desktop verification
 
 ## Default Path Status
 
@@ -192,6 +211,7 @@ Windows 侧若要打开目录，应由 Windows Codex 转换为：
 - `flash_attn` 本地编译链仍是历史高风险路径，曾触发 WSL OOM；当前默认交付路径是 SDPA fallback
 - SDPA fallback 可真实出片，但生成时间偏长；本轮 Windows 客户端任务约 46 分 45 秒后完成
 - Windows Qt 客户端已完成真实编译、启动、创建任务、轮询终态和 `output_path` 获取
+- Windows Qt 客户端已通过 `download_url` 下载 Windows 本地 mp4，并持久化本地 `Videos` 索引
 - 当前 Windows agent 会话对 `\\wsl$` 路径访问被拒绝，因此 Explorer 打开输出目录的成功路径仍需真实桌面复验
 
 ## Windows Qt Client Verification
