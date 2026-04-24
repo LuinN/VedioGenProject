@@ -18,15 +18,12 @@ class QLabel;
 class QListWidget;
 class QDialog;
 class QFrame;
-class QMediaPlayer;
 class QPushButton;
 class QSplitter;
 class QStatusBar;
 class QTableWidget;
 class QTextBrowser;
 class QTimer;
-class QVideoFrame;
-class QVideoSink;
 
 struct DownloadedVideo {
     QString taskId;
@@ -163,6 +160,9 @@ private:
     QString taskReferenceImagePath(const TaskModels::TaskDetail &task) const;
     QString taskModeLabel(const TaskModels::TaskDetail &task) const;
     QString thumbnailPathForTask(const QString &taskId) const;
+    QString thumbnailVersionPathForTask(const QString &taskId) const;
+    bool isTaskThumbnailCurrent(const QString &taskId) const;
+    void writeTaskThumbnailVersion(const QString &taskId);
     QString previewVideoPathForTask(const QString &taskId) const;
     QString localVideoPathForPreview(const QString &taskId) const;
     void ensureTaskResultPreview(const TaskModels::TaskDetail &task);
@@ -212,8 +212,6 @@ private:
     QDialog *m_configurationDialog = nullptr;
     QDialog *m_videosDialog = nullptr;
     QDialog *m_diagnosticsDialog = nullptr;
-    QMediaPlayer *m_thumbnailPlayer = nullptr;
-    QVideoSink *m_thumbnailVideoSink = nullptr;
     QLineEdit *m_serviceUrlEdit = nullptr;
     QComboBox *m_sizeCombo = nullptr;
     QLineEdit *m_wslDistroEdit = nullptr;

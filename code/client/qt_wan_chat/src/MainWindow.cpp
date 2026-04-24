@@ -61,6 +61,8 @@ constexpr auto kVideoIndexFileName = "downloaded_videos.json";
 constexpr auto kTaskMetadataFileName = "metadata.json";
 constexpr auto kPreviewVideoFileName = "result.mp4";
 constexpr auto kThumbnailFileName = "thumbnail.png";
+constexpr auto kThumbnailVersionFileName = "thumbnail.version";
+constexpr auto kThumbnailVersion = "2";
 constexpr auto kDownloadPurposeUser = "user";
 constexpr auto kDownloadPurposePreview = "preview";
 constexpr qint64 kMaxInputImageBytes = 20ll * 1024ll * 1024ll;
@@ -237,9 +239,6 @@ void MainWindow::setupUi()
     setCentralWidget(splitter);
     setupHiddenResultsTable();
     setupDialogs();
-    m_thumbnailPlayer = new QMediaPlayer(this);
-    m_thumbnailVideoSink = new QVideoSink(this);
-    m_thumbnailPlayer->setVideoSink(m_thumbnailVideoSink);
     applyVisualStyle();
 
     statusBar()->showMessage(QStringLiteral("Ready"), 3000);
@@ -625,38 +624,6 @@ void MainWindow::connectSignals()
     });
     connect(m_wslDistroEdit, &QLineEdit::textChanged, this, &MainWindow::updateOutputDirectoryField);
     connect(m_openOutputDirectoryButton, &QPushButton::clicked, this, &MainWindow::openSelectedOutputDirectory);
-    connect(m_thumbnailVideoSink, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame &frame) {
-        if (m_currentThumbnailTaskId.isEmpty() || !frame.isValid()) {
-            return;
-        }
-        const QImage image = frame.toImage();
-        if (image.isNull()) {
-            return;
-        }
-        const QString thumbnailPath = thumbnailPathForTask(m_currentThumbnailTaskId);
-        QDir().mkpath(QFileInfo(thumbnailPath).absolutePath());
-        const bool saved = image.scaled(720, 405, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)
-                               .save(thumbnailPath, "PNG");
-        finishThumbnailGeneration(
-            saved,
-            saved
-                ? QStringLiteral("Saved task thumbnail: %1").arg(thumbnailPath)
-                : QStringLiteral("Failed to save task thumbnail: %1").arg(thumbnailPath));
-    });
-    connect(m_thumbnailPlayer, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString &errorString) {
-        if (!m_currentThumbnailTaskId.isEmpty()) {
-            finishThumbnailGeneration(false, QStringLiteral("Thumbnail generation failed: %1").arg(errorString));
-        }
-    });
-    connect(m_thumbnailPlayer, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus status) {
-        if (m_currentThumbnailTaskId.isEmpty()) {
-            return;
-        }
-        if (status == QMediaPlayer::EndOfMedia || status == QMediaPlayer::InvalidMedia) {
-            finishThumbnailGeneration(false, QStringLiteral("Thumbnail generation ended before a video frame was decoded."));
-        }
-    });
-
     connect(&m_apiClient, &ApiClient::healthChecked, this, &MainWindow::onHealthChecked);
     connect(&m_apiClient, &ApiClient::taskCreated, this, &MainWindow::onTaskCreated);
     connect(&m_apiClient, &ApiClient::taskFetched, this, &MainWindow::onTaskFetched);
@@ -1654,19 +1621,19 @@ QWidget *MainWindow::buildTaskResultPreview(const TaskModels::TaskDetail &task)
     imageLabel->installEventFilter(this);
 
     const QString thumbnailPath = thumbnailPathForTask(task.taskId);
-    if (QFileInfo::exists(thumbnailPath)) {
-        QPixmap pixmap(thumbnailPath);
-        imageLabel->setPixmap(pixmap.scaled(520, 292, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        imageLabel->setToolTip(QStringLiteral("Double-click to play video."));
-    } else if (m_previewDownloadInFlightTaskIds.contains(task.taskId)) {
+    if (m_previewDownloadInFlightTaskIds.contains(task.taskId)) {
         imageLabel->setText(QStringLiteral("Preparing video..."));
         imageLabel->setToolTip(QStringLiteral("Downloading the generated video for preview."));
     } else if (m_thumbnailQueuedTaskIds.contains(task.taskId) || m_thumbnailInFlightTaskIds.contains(task.taskId)) {
         imageLabel->setText(QStringLiteral("Creating preview..."));
-        imageLabel->setToolTip(QStringLiteral("Extracting the first frame."));
+        imageLabel->setToolTip(QStringLiteral("Extracting a representative frame."));
+    } else if (isTaskThumbnailCurrent(task.taskId)) {
+        QPixmap pixmap(thumbnailPath);
+        imageLabel->setPixmap(pixmap.scaled(520, 292, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        imageLabel->setToolTip(QStringLiteral("Double-click to play video."));
     } else if (m_thumbnailFailedTaskIds.contains(task.taskId)) {
         imageLabel->setText(QStringLiteral("Preview unavailable"));
-        imageLabel->setToolTip(QStringLiteral("First-frame extraction failed. Double-click to play if the local video is available."));
+        imageLabel->setToolTip(QStringLiteral("Preview frame extraction failed. Double-click to play if the local video is available."));
     } else {
         imageLabel->setText(QStringLiteral("Preparing preview..."));
         imageLabel->setToolTip(QStringLiteral("Waiting for the generated video preview."));
@@ -2344,6 +2311,41 @@ QString MainWindow::thumbnailPathForTask(const QString &taskId) const
     return QDir(taskCacheDirectory(taskId)).filePath(QString::fromLatin1(kThumbnailFileName));
 }
 
+QString MainWindow::thumbnailVersionPathForTask(const QString &taskId) const
+{
+    return QDir(taskCacheDirectory(taskId)).filePath(QString::fromLatin1(kThumbnailVersionFileName));
+}
+
+bool MainWindow::isTaskThumbnailCurrent(const QString &taskId) const
+{
+    if (!QFileInfo::exists(thumbnailPathForTask(taskId))) {
+        return false;
+    }
+
+    QFile versionFile(thumbnailVersionPathForTask(taskId));
+    if (!versionFile.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    return QString::fromUtf8(versionFile.readAll()).trimmed() == QString::fromLatin1(kThumbnailVersion);
+}
+
+void MainWindow::writeTaskThumbnailVersion(const QString &taskId)
+{
+    const QString versionPath = thumbnailVersionPathForTask(taskId);
+    QDir().mkpath(QFileInfo(versionPath).absolutePath());
+    QSaveFile file(versionPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        appendDiagnostic(QStringLiteral("Failed to open thumbnail version file: %1 | path=%2")
+                             .arg(file.errorString(), versionPath));
+        return;
+    }
+    file.write(QByteArray(kThumbnailVersion));
+    if (!file.commit()) {
+        appendDiagnostic(QStringLiteral("Failed to write thumbnail version file: %1 | path=%2")
+                             .arg(file.errorString(), versionPath));
+    }
+}
+
 QString MainWindow::previewVideoPathForTask(const QString &taskId) const
 {
     return QDir(taskCacheDirectory(taskId)).filePath(QString::fromLatin1(kPreviewVideoFileName));
@@ -2370,7 +2372,7 @@ void MainWindow::ensureTaskResultPreview(const TaskModels::TaskDetail &task)
     if (task.status != QStringLiteral("succeeded") || task.taskId.isEmpty()) {
         return;
     }
-    if (QFileInfo::exists(thumbnailPathForTask(task.taskId))
+    if (isTaskThumbnailCurrent(task.taskId)
         || m_thumbnailQueuedTaskIds.contains(task.taskId)
         || m_thumbnailInFlightTaskIds.contains(task.taskId)
         || m_previewDownloadInFlightTaskIds.contains(task.taskId)) {
@@ -2415,7 +2417,7 @@ bool MainWindow::startPreviewDownloadForTask(const TaskModels::TaskDetail &task,
 void MainWindow::enqueueThumbnailGeneration(const QString &taskId)
 {
     if (taskId.trimmed().isEmpty()
-        || QFileInfo::exists(thumbnailPathForTask(taskId))
+        || isTaskThumbnailCurrent(taskId)
         || m_thumbnailQueuedTaskIds.contains(taskId)
         || m_thumbnailInFlightTaskIds.contains(taskId)
         || m_thumbnailFailedTaskIds.contains(taskId)) {
@@ -2424,6 +2426,11 @@ void MainWindow::enqueueThumbnailGeneration(const QString &taskId)
 
     if (localVideoPathForPreview(taskId).isEmpty()) {
         return;
+    }
+
+    if (QFileInfo::exists(thumbnailPathForTask(taskId))) {
+        QFile::remove(thumbnailPathForTask(taskId));
+        QFile::remove(thumbnailVersionPathForTask(taskId));
     }
 
     m_thumbnailQueuedTaskIds.insert(taskId);
@@ -2448,10 +2455,104 @@ void MainWindow::startNextThumbnailGeneration()
 
     m_currentThumbnailTaskId = taskId;
     m_thumbnailInFlightTaskIds.insert(taskId);
-    appendDiagnostic(QStringLiteral("Extracting first frame for task %1 from %2.").arg(taskId, videoPath));
-    m_thumbnailPlayer->stop();
-    m_thumbnailPlayer->setSource(QUrl::fromLocalFile(videoPath));
-    m_thumbnailPlayer->play();
+    appendDiagnostic(QStringLiteral("Extracting preview frame for task %1 from %2.").arg(taskId, videoPath));
+
+    auto *context = new QObject(this);
+    auto *player = new QMediaPlayer(context);
+    auto *sink = new QVideoSink(context);
+    player->setVideoSink(sink);
+    context->setProperty("finished", false);
+    context->setProperty("acceptFrames", false);
+    context->setProperty("seekRequested", false);
+    context->setProperty("targetPosition", 1000);
+
+    auto enableFrameCapture = [context]() {
+        if (!context->property("finished").toBool()) {
+            context->setProperty("acceptFrames", true);
+        }
+    };
+
+    auto requestSeek = [context, player, enableFrameCapture]() {
+        if (context->property("finished").toBool() || context->property("seekRequested").toBool()) {
+            return;
+        }
+        context->setProperty("seekRequested", true);
+        context->setProperty("acceptFrames", false);
+        player->setPosition(context->property("targetPosition").toLongLong());
+        player->play();
+        QTimer::singleShot(900, context, enableFrameCapture);
+    };
+
+    auto finish = [this, context, player, taskId](bool success, const QString &details) {
+        if (context->property("finished").toBool()) {
+            return;
+        }
+        context->setProperty("finished", true);
+        player->stop();
+        player->setSource(QUrl());
+        context->deleteLater();
+        finishThumbnailGeneration(success, details);
+    };
+
+    connect(player, &QMediaPlayer::durationChanged, context, [context](qint64 duration) {
+        if (duration > 0) {
+            context->setProperty("targetPosition", qBound<qint64>(250ll, duration / 3, 1500ll));
+        }
+    });
+    connect(player, &QMediaPlayer::mediaStatusChanged, context, [context, requestSeek, finish](QMediaPlayer::MediaStatus status) {
+        if (context->property("finished").toBool()) {
+            return;
+        }
+        if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia) {
+            requestSeek();
+        } else if (status == QMediaPlayer::EndOfMedia || status == QMediaPlayer::InvalidMedia) {
+            finish(false, QStringLiteral("Thumbnail generation ended before a usable video frame was decoded."));
+        }
+    });
+    connect(player, &QMediaPlayer::positionChanged, context, [context](qint64 position) {
+        if (context->property("finished").toBool() || !context->property("seekRequested").toBool()) {
+            return;
+        }
+        const qint64 targetPosition = context->property("targetPosition").toLongLong();
+        if (position >= qMax<qint64>(0, targetPosition - 120)) {
+            context->setProperty("acceptFrames", true);
+        }
+    });
+    connect(player, &QMediaPlayer::errorOccurred, context, [finish](QMediaPlayer::Error, const QString &errorString) {
+        finish(false, QStringLiteral("Thumbnail generation failed: %1").arg(errorString));
+    });
+    connect(sink, &QVideoSink::videoFrameChanged, context, [this, context, taskId, finish](const QVideoFrame &frame) {
+        if (context->property("finished").toBool()
+            || !context->property("acceptFrames").toBool()
+            || !frame.isValid()) {
+            return;
+        }
+        const QImage image = frame.toImage();
+        if (image.isNull()) {
+            return;
+        }
+        const QString thumbnailPath = thumbnailPathForTask(taskId);
+        QDir().mkpath(QFileInfo(thumbnailPath).absolutePath());
+        QFile::remove(thumbnailPath);
+        const bool saved = image.scaled(720, 405, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)
+                               .save(thumbnailPath, "PNG");
+        if (saved) {
+            writeTaskThumbnailVersion(taskId);
+        }
+        finish(
+            saved,
+            saved
+                ? QStringLiteral("Saved task thumbnail: %1").arg(thumbnailPath)
+                : QStringLiteral("Failed to save task thumbnail: %1").arg(thumbnailPath));
+    });
+    QTimer::singleShot(6000, context, [finish]() {
+        finish(false, QStringLiteral("Thumbnail generation timed out before a usable video frame was decoded."));
+    });
+    QTimer::singleShot(300, context, requestSeek);
+    QTimer::singleShot(1500, context, enableFrameCapture);
+
+    player->setSource(QUrl::fromLocalFile(videoPath));
+    player->play();
 }
 
 void MainWindow::finishThumbnailGeneration(bool success, const QString &details)
@@ -2466,8 +2567,6 @@ void MainWindow::finishThumbnailGeneration(bool success, const QString &details)
         m_thumbnailFailedTaskIds.insert(taskId);
     }
     m_currentThumbnailTaskId.clear();
-    m_thumbnailPlayer->stop();
-    m_thumbnailPlayer->setSource(QUrl());
     appendDiagnostic(details);
     refreshTasksTable();
     startNextThumbnailGeneration();

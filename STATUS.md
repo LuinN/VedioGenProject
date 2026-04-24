@@ -93,10 +93,12 @@
 - 已支持双击视频或点击 `Play Selected` 调用 Windows 默认播放器
 - 已支持完成任务卡片显示结果视频首帧截图：
   - 缩略图缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/thumbnail.png`
+  - 缩略图版本标记缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/thumbnail.version`
   - 预览视频缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/result.mp4`
   - 可复用 Videos 索引里的本地 mp4
   - 缺少本地 mp4 时会按需后台下载到任务缓存目录
   - 双击任务卡片中的结果截图可调用 Windows 默认播放器
+  - 已修复旧缩略图生成链路可能复用同一帧画面的问题：现在每个任务使用独立解码器、旧缓存按版本失效并重建
 - 已接入输入区单图附件：
   - 支持 `png` / `jpg` / `jpeg` / `webp`
   - 选择后会显示缩略图、文件名和删除按钮
@@ -123,6 +125,21 @@
 ## 最近一次重要进展
 
 2026-04-25：
+
+- Windows Qt 客户端修复完成任务缩略图串帧/旧缓存问题：
+  - 根因：旧实现复用同一个 `QMediaPlayer + QVideoSink`，切换视频源时可能保存上一条媒体残留帧；同时旧 `thumbnail.png` 只按文件存在判断，不会自动重建
+  - 修复：每个任务缩略图生成使用独立 `QMediaPlayer + QVideoSink`
+  - 修复：新增 `thumbnail.version=2`，旧缩略图无版本或版本不匹配时自动删除并重建
+  - 修复：保存前先删除旧 `thumbnail.png`，避免生成失败时继续展示旧帧
+  - 修复：seek 到任务自己的视频中段附近后再接收帧，并加入定时 fallback，避免 Qt Multimedia 后端不发 `LoadedMedia/BufferedMedia` 时一直超时
+- 真实验证：
+  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
+  - 短暂启动客户端后，3 个成功任务均生成新的 `thumbnail.png` 与 `thumbnail.version`
+  - 3 个缩略图 SHA256 均不同：
+    - `0dfbe405-19cb-4256-a86b-13c49569a5b5`: `F578E7306F5B467296E87276883997C85461632F0BAE64BD395AA46C7BFD1D27`
+    - `18439c7f-d91b-42a4-a5f3-2e90624587f8`: `5720DC16BDB1D1C45024DC71DA00709A6C62BD5EC4C1434DF74FA44FA3EC3C7B`
+    - `57783f7a-5915-49f2-b105-8cd15dd26fbe`: `0FBB94A6A0302F0759A52F04C124447C6A2E0753CF948941E456EF5F7168B065`
+  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`
 
 - Windows Qt 客户端完成 ChatGPT 风格主界面重构：
   - 启动后不再显示右侧 Configuration / Results / Videos / Diagnostics 面板
