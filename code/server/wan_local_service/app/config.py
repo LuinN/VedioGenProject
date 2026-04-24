@@ -26,6 +26,36 @@ DEFAULT_ALLOWED_SIZES = ("1280*704", "704*1280")
 DEFAULT_SIZE = "1280*704"
 DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
+TASK_OUTPUT_FILENAME = "result.mp4"
+
+
+def _parse_env_bool(raw_value: str | None, default: bool) -> bool:
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _parse_optional_int(raw_value: str | None) -> int | None:
+    if raw_value is None:
+        return None
+    normalized = raw_value.strip()
+    if not normalized:
+        return None
+    return int(normalized)
+
+
+def _parse_optional_float(raw_value: str | None) -> float | None:
+    if raw_value is None:
+        return None
+    normalized = raw_value.strip()
+    if not normalized:
+        return None
+    return float(normalized)
 
 
 def _parse_allowed_sizes(raw_value: str | None) -> tuple[str, ...]:
@@ -58,6 +88,18 @@ class Settings:
     python_bin: str
     allowed_sizes: tuple[str, ...]
     default_size: str
+    low_memory_profile: bool
+    offload_model: bool
+    t5_cpu: bool
+    convert_model_dtype: bool
+    sample_solver: str
+    sample_steps: int | None
+    sample_shift: float | None
+    sample_guide_scale: float | None
+    frame_num: int | None
+    runtime_memory_guard_enabled: bool
+    min_mem_available_gb: float
+    min_swap_available_gb: float
 
     def ensure_directories(self) -> None:
         for path in (
@@ -102,6 +144,25 @@ def load_settings() -> Settings:
     if default_size not in allowed_sizes:
         default_size = allowed_sizes[0]
 
+    low_memory_profile = _parse_env_bool(os.getenv("WAN_LOW_MEMORY_PROFILE"), False)
+    frame_num = _parse_optional_int(os.getenv("WAN_FRAME_NUM"))
+    if frame_num is None and low_memory_profile:
+        frame_num = 17
+
+    sample_steps = _parse_optional_int(os.getenv("WAN_SAMPLE_STEPS"))
+    if sample_steps is None and low_memory_profile:
+        sample_steps = 20
+
+    sample_shift = _parse_optional_float(os.getenv("WAN_SAMPLE_SHIFT"))
+    sample_guide_scale = _parse_optional_float(os.getenv("WAN_SAMPLE_GUIDE_SCALE"))
+    min_mem_available_gb = _parse_optional_float(os.getenv("WAN_MIN_MEM_AVAILABLE_GB"))
+    if min_mem_available_gb is None:
+        min_mem_available_gb = 4.0 if low_memory_profile else 2.0
+
+    min_swap_available_gb = _parse_optional_float(os.getenv("WAN_MIN_SWAP_AVAILABLE_GB"))
+    if min_swap_available_gb is None:
+        min_swap_available_gb = 2.0 if low_memory_profile else 1.0
+
     return Settings(
         service_root=service_root,
         service_host=(os.getenv("WAN_SERVICE_HOST") or "0.0.0.0"),
@@ -114,7 +175,25 @@ def load_settings() -> Settings:
         wan_repo_dir=wan_repo_dir,
         wan_model_dir=wan_model_dir,
         wan_generate_py=wan_generate_py,
-        python_bin=os.getenv("WAN_PYTHON_BIN") or sys.executable,
+        python_bin=os.getenv("WAN_INFERENCE_PYTHON_BIN") or sys.executable,
         allowed_sizes=allowed_sizes,
         default_size=default_size,
+        low_memory_profile=low_memory_profile,
+        offload_model=_parse_env_bool(os.getenv("WAN_OFFLOAD_MODEL"), True),
+        t5_cpu=_parse_env_bool(os.getenv("WAN_T5_CPU"), True),
+        convert_model_dtype=_parse_env_bool(
+            os.getenv("WAN_CONVERT_MODEL_DTYPE"),
+            True,
+        ),
+        sample_solver=(os.getenv("WAN_SAMPLE_SOLVER") or "unipc").strip() or "unipc",
+        sample_steps=sample_steps,
+        sample_shift=sample_shift,
+        sample_guide_scale=sample_guide_scale,
+        frame_num=frame_num,
+        runtime_memory_guard_enabled=_parse_env_bool(
+            os.getenv("WAN_ENFORCE_RUNTIME_MEMORY_GUARD"),
+            False,
+        ),
+        min_mem_available_gb=min_mem_available_gb,
+        min_swap_available_gb=min_swap_available_gb,
     )

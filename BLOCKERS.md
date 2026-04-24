@@ -2,6 +2,26 @@
 
 ## 当前真实阻塞
 
+### 新增：当前 workspace 已具备真实出片所需的最小服务端环境
+
+当前会话真实检查结果：
+
+```text
+code/server/wan_local_service/.venv                  present
+code/server/wan_local_service/third_party/Wan2.2    present
+code/server/wan_local_service/third_party/Wan2.2-TI2V-5B present
+nvidia-smi                                           RTX 3090 visible
+nvcc                                                 missing
+```
+
+当前结论：
+
+- 服务端最小运行链路已经打通，并已真实生成 `result.mp4`
+- 当前剩余阻塞不在“能不能跑”，而在：
+  - Windows 客户端长任务轮询闭环
+  - Windows 客户端最终联调
+  - `flash_attn` 高性能路径
+
 ### 1. WSL FastAPI 服务在 Windows 客户端轮询期间掉线，后台模式已补上但仍待真实联调复验
 
 Windows 客户端真实报错：
@@ -24,109 +44,130 @@ details=Connection refused
 
 - Windows 客户端的创建任务和轮询逻辑已被真实证明可用
 - 但终态失败展示与成功结果展示无法稳定复验
-- 服务端现已新增 `bash scripts/run_service.sh start|status|stop` 后台模式，优先缓解“服务绑在临时终端上”的问题
-- 该缓解措施尚未在真实 Windows -> WSL 客户端联调中完成闭环复验
+- 服务端现已新增并复验 `bash scripts/run_service.sh start|status|stop` 后台模式
+- 当前 WSL 侧阻塞已经从“后台服务自己起不来”收敛成“Windows 客户端长任务轮询尚未补一次真实闭环复验”
 
-### 2. 官方 TI2V-5B 主路径已确认 `flash_attn` 是运行时硬依赖
+### 2. 当前已经能真实出片，但 SDPA fallback 性能明显偏慢
 
 最新服务端真实任务：
 
-- `task_id`: `16daa568-fede-4da1-b20b-28f1138d09a1`
-- `log_path`: `/mnt/d/projects/videogenproject/code/server/wan_local_service/logs/16daa568-fede-4da1-b20b-28f1138d09a1.log`
+- `task_id`: `57783f7a-5915-49f2-b105-8cd15dd26fbe`
+- `log_path`: `/home/liupengkun/VedioGenProject/code/server/wan_local_service/logs/57783f7a-5915-49f2-b105-8cd15dd26fbe.log`
+- `output_path`: `/home/liupengkun/VedioGenProject/code/server/wan_local_service/outputs/57783f7a-5915-49f2-b105-8cd15dd26fbe/result.mp4`
 
 真实运行进展：
 
 - 已加载 T5 checkpoint
 - 已加载 VAE checkpoint
 - 已加载 3 个模型 shard
-- 已进入 `Generating video ...` 的首个采样 step
+- 已完成 50 步采样并保存视频文件
 
 真实尾部：
 
 ```text
-File "/mnt/d/projects/videogenproject/code/server/wan_local_service/third_party/Wan2.2/wan/modules/attention.py", line 112, in flash_attention
-    assert FLASH_ATTN_2_AVAILABLE
-AssertionError
-generate.py exit code: 1
+[2026-04-24 11:54:45,831] INFO: Saving generated video to .../result.mp4
+[2026-04-24 11:54:48,035] INFO: Finished.
+generate.py exit code: 0
 ```
 
-代码依据：
+当前缓解状态：
 
-- `wan/modules/model.py` 直接调用 `flash_attention(...)`
-- `wan/modules/attention.py` 的 `flash_attention()` 在无 FA3 时会走 `assert FLASH_ATTN_2_AVAILABLE`
-- TI2V 主路径没有走 `attention()` 中的 `scaled_dot_product_attention` 回退逻辑
+- `code/server/wan_local_service/third_party/Wan2.2/wan/modules/attention.py` 已补丁为：
+  - `flash_attention()` 在 `flash_attn` / `flash_attn_interface` 都缺失时，不再直接 `assert`
+  - 改为复用同文件已有的 `scaled_dot_product_attention` fallback
+- `WanRunner` 与 `check_env.sh` 也已同步接受这条 fallback 路径
+- 在真实 WSL 环境里，当前已确认：
+  - `service_ready=yes`
+  - `inference_ready=yes`
+  - `flash_attn` 缺失不再拦住真实推理启动
+  - 真实任务 `57783f7a-5915-49f2-b105-8cd15dd26fbe` 已成功出片
+  - RTX 3090 显存已打到约 `23.5 GiB / 24 GiB`，`GPU-Util=100%`
 
-影响：
+当前新问题：
 
-- 这已经不是单纯的 Python 缺包问题
-- 对当前官方 TI2V-5B 主路径，不应尝试无 `flash_attn` 绕过方案
-- 当前没有真实 `output_path`
-- 2026-04-24 已再次用“绕过客户端、直接运行官方 `generate.py`”的方式复验到同一失败点，结论没有变化
+- 当前主阻塞已从“依赖断言”切换成“SDPA fallback 模式下真实生成更慢”
+- 这次 1280x704 样例总耗时约 31 分钟，其中采样阶段约 16 分 36 秒
+- 服务端 `run_sample_t2v.sh` 已把默认等待窗口拉长到 40 分钟，并会输出 `stage/progress`
+- 当前剩余问题主要落在 Windows 客户端轮询策略尚未按长任务重新做一次真实复验
 
-### 3. `flash_attn` 安装失败
+### 3. `flash_attn` 本地编译会触发 WSL 全局 OOM，并进一步打断 Codex / 用户会话
 
-真实错误：
+最新真实证据来自本机系统日志，而不是推测：
+
+- `/var/log/apt/history.log` 记录 `cuda-toolkit-13-0` 已在 `2026-04-23 23:24` 安装完成
+- `/var/log/kern.log` 在 `2026-04-23 23:28`、`2026-04-24 00:12`、`00:25`、`00:37`、`01:02`、`01:14`、`01:46` 多次记录到 `flash_attn` 编译期间的 OOM
+- 同期进程表里出现多路并发的 `cicc` / `cc1plus` / `nvcc`
+- 其中 `cicc` 多次被直接打死，例如：
+
+```text
+2026-04-24T00:37:45 ... Out of memory: Killed process 3017 (cicc)
+2026-04-24T01:46:37 ... Out of memory: Killed process 6120 (cicc)
+```
+
+- 更严重的一次在 `2026-04-24 01:46:34` 已经开始杀用户会话里的 `systemd`：
+
+```text
+Out of memory: Killed process 1119 (systemd)
+```
+
+- `journalctl` 同时记录：
+
+```text
+system.journal corrupted or uncleanly shut down, renaming and replacing
+```
+
+当前结论：
+
+- 这已经不是“还没装好 `nvcc` / `CUDA_HOME`”的旧问题
+- 真实根因是 `flash_attn` 本地编译进入 CUDA/C++ 阶段后并发过高，触发 WSL 全局 OOM
+- 一旦用户会话里的 `systemd` 被杀，当前 shell、Codex 进程和相关终端都会被一起打断，所以主观感受会像“Codex 自动退出、WSL 崩了”
+
+已知放大因素：
+
+- `setup_wan22.sh` 之前默认 `WAN_FLASH_ATTN_MAX_JOBS=4`
+- 同期日志里还能看到 `dockerd` / `containerd` / `postgres` 等常驻进程占用额外内存
+- Windows `.wslconfig` 当前虽然已设置：
+  - `memory=24GB`
+  - `swap=12GB`
+  - `processors=12`
+  但多路 `cicc` 仍可把 RAM 和 swap 全部耗尽
+
+最小修复路径：
+
+- 先停掉 Docker 和其他不必要的 WSL 常驻服务
+- 使用串行编译重跑：
+  - `cd code/server/wan_local_service`
+  - `WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/setup_wan22.sh`
+- 如果仍然 OOM，再临时提高 `.wslconfig` 的 `memory` / `swap`，或在更干净的 WSL 发行版中完成一次编译
+
+### 4. 更早一轮的 `nvcc` / `CUDA_HOME` 缺失错误已经不是最新主阻塞
+
+历史错误仍真实存在过：
 
 ```text
 OSError: CUDA_HOME environment variable is not set. Please set it to your CUDA install root.
-```
-
-同一次报错上下文还包含：
-
-```text
 flash_attn was requested, but nvcc was not found
 ```
 
-触发位置：
+但根据 `apt` 历史记录，这个阶段已经在真实 WSL 上被推进到“可以真正启动本地编译”。
 
-- `bash code/server/wan_local_service/scripts/setup_wan22.sh`
-- `python -m pip install flash_attn --no-build-isolation`
+当前应优先处理的不是继续追 `nvcc`，而是解决本地编译 OOM。
 
-影响：
+当前缓解状态：
 
-- Wan 主依赖链没有完成到官方推荐状态
-- 最新真实采样任务已经证明：在当前环境中确实会阻塞在 attention 路径
+- 编译脚本已经默认降到单并发
+- 编译前会先检查 `MemAvailable` / `SwapFree`
+- 当前这次真实编译也已转存到仓库内持久源码树 `code/server/wan_local_service/third_party/flash-attn-2.8.3-src`
+- 已记录下 `22 / 73` 个 `.o` 目标的当前快照，可以直接续编
+- 这可以减少再次把 WSL 打挂的概率，也避免每次都从 `pip` 的临时目录重新开始
+- 但在当前 workspace 里，`nvcc` 仍不在 PATH，`flash_attn` 也仍未装好，所以高性能路径还没有真正闭环
 
-最小修复路径：
+当前续编入口：
 
-- 优先安装和当前 `torch 2.11.0+cu130` 更贴近的 `cuda-toolkit-13-0`
-- 执行：
-  - `sudo apt-get update`
-  - `sudo apt-get install -y cuda-toolkit-13-0`
-  - `export CUDA_HOME=/usr/local/cuda-13.0`
-  - `export PATH="${CUDA_HOME}/bin:${PATH}"`
-- 重跑 `bash code/server/wan_local_service/scripts/setup_wan22.sh`
-- 再重跑 `bash code/server/wan_local_service/scripts/run_sample_t2v.sh`
-
-### 4. 当前 agent 会话无法直接完成 NVIDIA CUDA apt 安装
-
-当前状态：
-
-- 官方 keyring 安装包已下载：
-  - `/tmp/cuda-keyring_1.1-1_all.deb`
-- 本机操作者已在 WSL 中完成：
-  - `sudo dpkg -i /tmp/cuda-keyring_1.1-1_all.deb`
-- `cuda-ubuntu2404-x86_64.list` 已存在，NVIDIA apt 源接入完成
-
-当前 agent 侧真实错误：
-
-```text
-sudo: a terminal is required to read the password
-sudo: a password is required
-```
-
-影响：
-
-- 不能在当前 agent 会话里直接完成后续 `sudo apt-get update` / `sudo apt-get install`
-- 因此 `nvcc` / `CUDA_HOME` 仍未进入可验证状态
-
-最小修复路径：
-
-- 使用具备 sudo 权限的 WSL 会话继续完成 NVIDIA CUDA `13.x` toolkit 安装
-- 优先执行：
-  - `sudo apt-get update`
-  - `sudo apt-get install -y cuda-toolkit-13-0`
-- 或由本机操作者先完成 toolkit 安装，再回到当前服务端脚本复验
+- `cd code/server/wan_local_service`
+- `bash scripts/build_flash_attn_resumable.sh status`
+- `WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/build_flash_attn_resumable.sh resume`
+- 或者继续走总安装链：`WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/setup_wan22.sh`
 
 ### 5. 官方主 requirements 之外还需要额外运行时依赖
 
@@ -183,16 +224,35 @@ python3 -m http.server 8765
 
 影响：
 
-- 当前 agent 会话可以完成 `run_service.sh` 的进程级后台起停验证
-- 但不能在本会话里把后台模式的 `/healthz` ready check 写成真实已复验
+- 当前 agent sandbox 里不能把本地监听端口的验证结果当成真实 WSL 主机结果
+- 后台服务 `/healthz` 的最终复验仍应放到真实 WSL 本机终端里完成
+
+### 8. `run_service.sh start` 已增强脱离当前会话，但 Windows 侧长轮询还需补一次真实复验
+
+最新真实现象：
+
+- 脚本当前已优先用 `setsid` 启动后台服务
+- 本轮在当前 agent 里已真实通过：
+  - `run_service.sh start`
+  - `run_service.sh status`
+  - `curl /healthz`
+  - `run_service.sh stop`
+- 因此当前 WSL 侧的“后台服务起不来”已不再是主阻塞
+
+当前剩余问题：
+
+- 还没有从 Windows Qt 客户端重新补一次“后台服务 + 长任务轮询 + 最终 output_path 展示”的真实联调
 
 最小修复路径：
 
 - 在真实 WSL 本机终端中执行 `bash code/server/wan_local_service/scripts/run_service.sh start`
-- 立刻执行 `curl --noproxy '*' --fail --silent --show-error http://127.0.0.1:8000/healthz`
-- 再从 Windows Qt 客户端重跑一次 smoke task
+- 再从 Windows Qt 客户端发起一次真实任务
+- 核对客户端最终是否拿到：
+  - `status=succeeded`
+  - `output_path`
+  - 长任务期间的轮询结果
 
-### 8. 当前 agent sandbox 下直接运行 `generate.py` 会给出伪造的 CUDA 假阻塞
+### 9. 当前 agent sandbox 下直接运行 `generate.py` 会给出伪造的 CUDA 假阻塞
 
 当前会话真实对照：
 

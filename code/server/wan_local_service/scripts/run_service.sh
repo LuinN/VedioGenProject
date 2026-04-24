@@ -22,6 +22,21 @@ resolve_exec_or_path() {
   fi
 }
 
+resolve_service_python() {
+  if [[ -n "${WAN_SERVICE_PYTHON_BIN:-}" ]]; then
+    resolve_exec_or_path "${WAN_SERVICE_PYTHON_BIN}"
+    return
+  fi
+
+  local default_venv_python="${SERVICE_ROOT}/.venv/bin/python"
+  if [[ -x "${default_venv_python}" ]]; then
+    printf '%s\n' "${default_venv_python}"
+    return
+  fi
+
+  resolve_exec_or_path "${WAN_PYTHON_BIN:-.venv/bin/python}"
+}
+
 if [[ -f "${SERVICE_ROOT}/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -32,7 +47,7 @@ fi
 COMMAND="${1:-foreground}"
 HOST="${WAN_SERVICE_HOST:-0.0.0.0}"
 PORT="${WAN_SERVICE_PORT:-8000}"
-PYTHON_BIN="$(resolve_exec_or_path "${WAN_PYTHON_BIN:-.venv/bin/python}")"
+PYTHON_BIN="$(resolve_service_python)"
 WAN_STORAGE_DIR="$(resolve_service_path "${WAN_STORAGE_DIR:-storage}")"
 WAN_LOG_DIR="$(resolve_service_path "${WAN_LOG_DIR:-logs}")"
 WAN_OUTPUT_DIR="$(resolve_service_path "${WAN_OUTPUT_DIR:-outputs}")"
@@ -47,6 +62,32 @@ mkdir -p \
   "${WAN_LOG_DIR}" \
   "${WAN_OUTPUT_DIR}" \
   "${WAN_THIRD_PARTY_DIR}"
+
+python_command_exists() {
+  local raw_value="$1"
+  if [[ "${raw_value}" == */* ]]; then
+    [[ -x "${raw_value}" ]]
+  else
+    command -v "${raw_value}" >/dev/null 2>&1
+  fi
+}
+
+validate_service_runtime() {
+  if ! python_command_exists "${PYTHON_BIN}"; then
+    echo "[error] Service Python not found: ${PYTHON_BIN}" >&2
+    echo "[hint] Run: cd ${SERVICE_ROOT} && bash scripts/setup_wan22.sh" >&2
+    echo "[hint] Check details with: cd ${SERVICE_ROOT} && bash scripts/check_env.sh" >&2
+    return 1
+  fi
+
+  if ! PYTHONPATH="${SERVICE_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
+    echo "[error] Service runtime dependencies are missing in ${PYTHON_BIN}" >&2
+    echo "[hint] Run: cd ${SERVICE_ROOT} && bash scripts/setup_wan22.sh" >&2
+    echo "[hint] Check details with: cd ${SERVICE_ROOT} && bash scripts/check_env.sh --require service" >&2
+    return 1
+  fi
+}
 
 read_pid() {
   if [[ ! -f "${SERVICE_PID_FILE}" ]]; then
@@ -97,6 +138,8 @@ wait_for_healthcheck() {
 }
 
 start_background_service() {
+  validate_service_runtime || return 1
+
   if service_is_running; then
     local running_pid
     running_pid="$(read_pid)"
@@ -106,8 +149,13 @@ start_background_service() {
   fi
 
   cd "${SERVICE_ROOT}"
-  nohup "${PYTHON_BIN}" -m uvicorn app.main:app --host "${HOST}" --port "${PORT}" \
-    >"${SERVICE_LOG_FILE}" 2>&1 < /dev/null &
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "${PYTHON_BIN}" -m uvicorn app.main:app --host "${HOST}" --port "${PORT}" \
+      >"${SERVICE_LOG_FILE}" 2>&1 < /dev/null &
+  else
+    nohup "${PYTHON_BIN}" -m uvicorn app.main:app --host "${HOST}" --port "${PORT}" \
+      >"${SERVICE_LOG_FILE}" 2>&1 < /dev/null &
+  fi
   local pid=$!
   printf '%s\n' "${pid}" > "${SERVICE_PID_FILE}"
 
@@ -121,6 +169,8 @@ start_background_service() {
 
   if ! wait_for_healthcheck; then
     echo "[run] Service process is alive but /healthz is not ready. Check ${SERVICE_LOG_FILE}" >&2
+    kill "${pid}" 2>/dev/null || true
+    rm -f "${SERVICE_PID_FILE}"
     tail -n 20 "${SERVICE_LOG_FILE}" >&2 || true
     return 1
   fi
@@ -155,7 +205,10 @@ stop_background_service() {
   done
 
   echo "[run] Service did not stop within timeout. pid=${pid}" >&2
-  return 1
+  kill -9 "${pid}" 2>/dev/null || true
+  rm -f "${SERVICE_PID_FILE}"
+  echo "[run] Service was force-stopped"
+  return 0
 }
 
 show_status() {
@@ -174,6 +227,7 @@ show_status() {
 
 case "${COMMAND}" in
   foreground)
+    validate_service_runtime
     cd "${SERVICE_ROOT}"
     echo "[run] Starting ${HOST}:${PORT}"
     echo "[run] OpenAPI docs: http://127.0.0.1:${PORT}/docs"

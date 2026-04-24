@@ -38,8 +38,102 @@ WAN_AUTO_INSTALL_CUDA_TOOLKIT="${WAN_AUTO_INSTALL_CUDA_TOOLKIT:-1}"
 WAN_CUDA_TOOLKIT_PACKAGE="${WAN_CUDA_TOOLKIT_PACKAGE:-cuda-toolkit-13-0}"
 WAN_SETUPTOOLS_SPEC="${WAN_SETUPTOOLS_SPEC:-setuptools<82}"
 WAN_FLASH_ATTN_VERSION="${WAN_FLASH_ATTN_VERSION:-2.8.3}"
-WAN_FLASH_ATTN_MAX_JOBS="${WAN_FLASH_ATTN_MAX_JOBS:-4}"
+WAN_FLASH_ATTN_MAX_JOBS="${WAN_FLASH_ATTN_MAX_JOBS:-1}"
+WAN_FLASH_ATTN_CUDA_ARCHS="${WAN_FLASH_ATTN_CUDA_ARCHS:-80}"
+WAN_FLASH_ATTN_MEMORY_GUARD="${WAN_FLASH_ATTN_MEMORY_GUARD:-1}"
+WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB="${WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB:-8}"
+WAN_FLASH_ATTN_MIN_SWAP_FREE_GB="${WAN_FLASH_ATTN_MIN_SWAP_FREE_GB:-8}"
 WAN_FLASH_ATTN_SPEC="flash-attn==${WAN_FLASH_ATTN_VERSION}"
+WAN_LOCAL_ATTENTION_PATCH="${SERVICE_ROOT}/patches/wan2.2_attention_sdpa_fallback.patch"
+
+read_meminfo_kib() {
+  local field_name="$1"
+  awk -v key="${field_name}:" '$1 == key { print $2; exit }' /proc/meminfo 2>/dev/null || true
+}
+
+format_gib_from_kib() {
+  local value_kib="${1:-}"
+  if [[ -z "${value_kib}" ]]; then
+    printf 'unknown\n'
+    return
+  fi
+  awk -v kib="${value_kib}" 'BEGIN { printf "%.1f GiB\n", kib / 1024 / 1024 }'
+}
+
+show_memory_headroom() {
+  local mem_available_kib
+  local swap_free_kib
+  mem_available_kib="$(read_meminfo_kib MemAvailable)"
+  swap_free_kib="$(read_meminfo_kib SwapFree)"
+  echo "[env] MemAvailable=$(format_gib_from_kib "${mem_available_kib}")"
+  echo "[env] SwapFree=$(format_gib_from_kib "${swap_free_kib}")"
+}
+
+warn_on_memory_heavy_processes() {
+  local matching_processes=""
+  matching_processes="$(ps -eo pid,comm,rss --sort=-rss 2>/dev/null | awk '
+    $2 ~ /^(dockerd|containerd|postgres|ollama|python|node)$/ {
+      printf "pid=%s comm=%s rss=%.1fMiB\n", $1, $2, $3 / 1024
+    }
+  ' | head -n 12)"
+  if [[ -n "${matching_processes}" ]]; then
+    echo "[warn] Active resident processes with notable memory footprint:"
+    printf '%s\n' "${matching_processes}"
+  fi
+}
+
+check_flash_attn_memory_headroom() {
+  if [[ "${WAN_FLASH_ATTN_MEMORY_GUARD}" != "1" ]]; then
+    return 0
+  fi
+
+  local mem_available_kib
+  local swap_free_kib
+  local min_mem_available_kib
+  local min_swap_free_kib
+  mem_available_kib="$(read_meminfo_kib MemAvailable)"
+  swap_free_kib="$(read_meminfo_kib SwapFree)"
+  min_mem_available_kib="$(awk -v gib="${WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB}" 'BEGIN { printf "%.0f\n", gib * 1024 * 1024 }')"
+  min_swap_free_kib="$(awk -v gib="${WAN_FLASH_ATTN_MIN_SWAP_FREE_GB}" 'BEGIN { printf "%.0f\n", gib * 1024 * 1024 }')"
+
+  show_memory_headroom
+  warn_on_memory_heavy_processes
+
+  if [[ -z "${mem_available_kib}" || -z "${swap_free_kib}" ]]; then
+    echo "[warn] Could not read /proc/meminfo. Continuing without flash_attn memory guard."
+    return 0
+  fi
+
+  if (( mem_available_kib >= min_mem_available_kib && swap_free_kib >= min_swap_free_kib )); then
+    return 0
+  fi
+
+  echo "[error] Refusing to start flash_attn local build with low memory headroom." >&2
+  echo "[error] Required at least ${WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB} GiB MemAvailable and ${WAN_FLASH_ATTN_MIN_SWAP_FREE_GB} GiB SwapFree." >&2
+  echo "[error] Stop Docker / other WSL services, or override the thresholds only if you accept OOM risk." >&2
+  return 1
+}
+
+ensure_wan_local_patch_applied() {
+  local patch_path="$1"
+  if [[ ! -f "${patch_path}" ]]; then
+    return 0
+  fi
+
+  if git -C "${WAN_REPO_DIR}" apply --reverse --check "${patch_path}" >/dev/null 2>&1; then
+    echo "[setup] Wan2.2 local patch already applied: $(basename "${patch_path}")"
+    return 0
+  fi
+
+  if git -C "${WAN_REPO_DIR}" apply --check "${patch_path}" >/dev/null 2>&1; then
+    echo "[setup] Applying Wan2.2 local patch: $(basename "${patch_path}")"
+    git -C "${WAN_REPO_DIR}" apply "${patch_path}"
+    return 0
+  fi
+
+  echo "[error] Could not apply Wan2.2 local patch: ${patch_path}" >&2
+  return 1
+}
 
 bootstrap_cuda_env() {
   local candidate=""
@@ -75,6 +169,12 @@ echo "[env] Wan model dir: ${WAN_MODEL_DIR}"
 echo "[env] Auto-install CUDA toolkit: ${WAN_AUTO_INSTALL_CUDA_TOOLKIT}"
 echo "[env] Setuptools constraint: ${WAN_SETUPTOOLS_SPEC}"
 echo "[env] FlashAttention package: ${WAN_FLASH_ATTN_SPEC}"
+echo "[env] FlashAttention max jobs: ${WAN_FLASH_ATTN_MAX_JOBS}"
+echo "[env] FlashAttention CUDA archs: ${WAN_FLASH_ATTN_CUDA_ARCHS}"
+echo "[env] FlashAttention memory guard: ${WAN_FLASH_ATTN_MEMORY_GUARD}"
+echo "[env] FlashAttention min MemAvailable: ${WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB} GiB"
+echo "[env] FlashAttention min SwapFree: ${WAN_FLASH_ATTN_MIN_SWAP_FREE_GB} GiB"
+echo "[env] Wan local patch: ${WAN_LOCAL_ATTENTION_PATCH}"
 
 command -v "${PYTHON_BOOTSTRAP_BIN}" >/dev/null 2>&1 || {
   echo "[error] Python executable not found: ${PYTHON_BOOTSTRAP_BIN}" >&2
@@ -161,6 +261,8 @@ else
   git clone https://github.com/Wan-Video/Wan2.2.git "${WAN_REPO_DIR}"
 fi
 
+ensure_wan_local_patch_applied "${WAN_LOCAL_ATTENTION_PATCH}"
+
 echo "[setup] Installing Wan2.2 requirements"
 WAN_REQ_TMP="$(mktemp)"
 grep -v '^flash_attn$' "${WAN_REPO_DIR}/requirements.txt" > "${WAN_REQ_TMP}"
@@ -175,8 +277,25 @@ python -m pip install --force-reinstall "${WAN_SETUPTOOLS_SPEC}"
 
 echo "[setup] Installing ${WAN_FLASH_ATTN_SPEC} without build isolation"
 export MAX_JOBS="${MAX_JOBS:-${WAN_FLASH_ATTN_MAX_JOBS}}"
+export NINJA_NUM_PROCESSES="${NINJA_NUM_PROCESSES:-${MAX_JOBS}}"
+export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-${MAX_JOBS}}"
 echo "[env] MAX_JOBS=${MAX_JOBS}"
-if ! python -m pip install --no-build-isolation "${WAN_FLASH_ATTN_SPEC}"; then
+echo "[env] NINJA_NUM_PROCESSES=${NINJA_NUM_PROCESSES}"
+echo "[env] CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL}"
+if grep -qi microsoft /proc/version 2>/dev/null && [[ "${MAX_JOBS}" != "1" ]]; then
+  echo "[warn] WSL local flash_attn builds have previously hit global OOM with higher parallelism."
+  echo "[warn] Keep MAX_JOBS=1 unless you have verified enough free memory and swap headroom."
+fi
+check_flash_attn_memory_headroom
+if ! \
+  WAN_FLASH_ATTN_VERSION="${WAN_FLASH_ATTN_VERSION}" \
+  WAN_FLASH_ATTN_MAX_JOBS="${WAN_FLASH_ATTN_MAX_JOBS}" \
+  WAN_FLASH_ATTN_CUDA_ARCHS="${WAN_FLASH_ATTN_CUDA_ARCHS}" \
+  WAN_FLASH_ATTN_MEMORY_GUARD="${WAN_FLASH_ATTN_MEMORY_GUARD}" \
+  WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB="${WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB}" \
+  WAN_FLASH_ATTN_MIN_SWAP_FREE_GB="${WAN_FLASH_ATTN_MIN_SWAP_FREE_GB}" \
+  WAN_PYTHON_SETUP_BIN="${PYTHON_BOOTSTRAP_BIN}" \
+  bash "${SERVICE_ROOT}/scripts/build_flash_attn_resumable.sh" resume; then
   echo "[error] flash_attn installation failed after installing the other Wan2.2 requirements." >&2
   echo "[error] This is a real blocker. Check the pip output above for the exact failure." >&2
   exit 1

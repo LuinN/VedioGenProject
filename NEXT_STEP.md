@@ -1,3 +1,3 @@
 # NEXT_STEP
 
-在具备 sudo 的真实 WSL 会话中直接运行 `bash code/server/wan_local_service/scripts/setup_wan22.sh`；该脚本现已自动尝试安装 `cuda-toolkit-13-0`，并处理 `.venv`、`setuptools<82`、`packaging/psutil/ninja` 和 `flash-attn==2.8.3` 安装。安装完成后再补一次直接 `generate.py` 验证，确认 `flash_attn` 已安装且不再阻塞首个采样 step。
+先在真实 WSL 会话中用 `bash code/server/wan_local_service/scripts/run_service.sh start` 托管后台服务，再从 Windows Qt 客户端发起一次真实任务，验证客户端能拿到 `task_id`、长任务轮询结果、终态 `status=succeeded` 和最终 `output_path`。如果后续要恢复高性能路径，再执行 `cd code/server/wan_local_service && WAN_FLASH_ATTN_CUDA_ARCHS=80 WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/build_flash_attn_resumable.sh resume`。

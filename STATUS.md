@@ -18,11 +18,9 @@
 - 稳定错误码与 HTTP 状态码映射
 - `null` 语义与重启恢复语义固定
 - `setup_wan22.sh` / `run_service.sh` / `run_sample_t2v.sh`
+- `check_env.sh` / `app.env_report`
 - 协议文档、自测报告、集成说明
-- Python 单测 `10 passed`
-- 真实 HTTP 自测
 - 默认模型目录在 README / `.env.example` / `config.py` / 启动脚本之间完成统一
-- `Wan2.2-TI2V-5B` 权重已实际下载到默认路径
 - `setup_wan22.sh` 已补齐当前真实验证过的缺失运行时依赖：
   - `einops`
   - `decord`
@@ -37,6 +35,19 @@
   - `storage/service.pid`
   - `logs/service.log`
 - `WanRunner` 失败结果已改为优先回传日志尾部的真实错误摘要，而不再只返回笼统的 `generate.py exited with code N`
+
+当前工作区重新核对后的真实环境状态：
+
+- `code/server/wan_local_service/.venv` 已存在
+- `code/server/wan_local_service/third_party/Wan2.2` 已存在
+- `code/server/wan_local_service/third_party/Wan2.2-TI2V-5B` 已存在
+- `nvidia-smi` 当前可用，GPU 为 `RTX 3090`
+- `nvcc` 当前仍不在 PATH
+- 当前工作区已经可以启动服务并跑通一次真实 `t2v` 生成
+- 当前未完成项主要剩在：
+  - `flash_attn` 高性能编译链
+  - Windows 客户端长任务轮询闭环
+  - Windows 客户端最终联调闭环
 
 ### Windows Qt 客户端
 
@@ -63,6 +74,119 @@
 
 2026-04-24：
 
+- 服务端可观测性和恢复语义已补强：
+  - `GET /api/tasks/{task_id}` 现已增加：
+    - `status_message`
+    - `progress_current`
+    - `progress_total`
+    - `progress_percent`
+  - 上述字段来自任务日志实时解析，可直接反映 `creating pipeline / loading checkpoints / sampling / saving video / finished`
+  - 任务详情读取时，如果发现 `outputs/<task_id>/result.mp4` 已存在，但数据库状态仍停在 `pending/running`，会自动回填成 `succeeded`
+  - 服务启动恢复时也不再一刀切把遗留 `pending/running` 任务全部改成失败；若输出文件已落盘，会优先恢复为 `succeeded`
+- 服务端脚本已继续收敛：
+  - `run_sample_t2v.sh` 默认等待窗口已从 6 分钟提升到 40 分钟
+  - `run_sample_t2v.sh` 轮询时会打印 `stage` 和采样进度
+  - `run_service.sh start` 现优先走 `setsid` 脱离当前会话
+  - `run_service.sh stop` 在超时后会补一次强制停止，避免遗留僵尸 PID
+- 当前会话已真实补过一轮后台服务复验：
+  - `bash code/server/wan_local_service/scripts/run_service.sh start`
+  - `bash code/server/wan_local_service/scripts/run_service.sh status`
+  - `curl --noproxy '*' http://127.0.0.1:8000/healthz`
+  - `bash code/server/wan_local_service/scripts/run_service.sh stop`
+  - 本轮在当前 agent 里均已成功
+- 当前服务端测试已提升到：
+  - `PYTHONPATH=$PWD .venv/bin/python -m pytest tests -q`
+  - `17 passed`
+- 新增服务端自测报告：
+  - `docs/reports/self_test/server/2026-04-24_server_recovery_and_observability.md`
+
+- 官方 Wan2.2 attention 路径已补上运行态 SDPA fallback：
+  - `code/server/wan_local_service/third_party/Wan2.2/wan/modules/attention.py`
+  - 现在 `flash_attention()` 在 `flash_attn` / `flash_attn_interface` 都缺失时，不再直接断在 `assert FLASH_ATTN_2_AVAILABLE`
+  - 会复用同文件里已有的 `scaled_dot_product_attention` 回退逻辑
+- 服务端当前也已接受这条 fallback 路径：
+  - `WanRunner` 不再把缺少 `flash_attn` 视为默认硬阻塞
+  - `check_env.sh` / `env_report.py` 在真实 WSL 环境里现已显示 `inference_ready=yes`
+  - 但 `flash_attn_build_ready` 仍然是 `no`
+- 真实服务链已推进到 GPU 满载生成阶段：
+  - 以 `bash code/server/wan_local_service/scripts/run_service.sh foreground` 托管服务
+  - 以 `bash code/server/wan_local_service/scripts/run_sample_t2v.sh` 创建了真实任务 `57783f7a-5915-49f2-b105-8cd15dd26fbe`
+  - 任务已真实从 `pending` 进入 `running`，最终完成并生成视频文件
+  - `nvidia-smi` 已看到 `/python3.12` 占用约 `23.5 GiB / 24 GiB` 显存，`GPU-Util=100%`
+  - 真实输出文件：
+    - `code/server/wan_local_service/outputs/57783f7a-5915-49f2-b105-8cd15dd26fbe/result.mp4`
+  - `ffprobe` 已确认：
+    - 编码：`h264`
+    - 分辨率：`1280x704`
+    - 时长：`5.041667s`
+    - 帧数：`121`
+    - 文件大小：`11051605` bytes
+  - 任务日志尾部已确认：
+    - `Saving generated video to .../result.mp4`
+    - `Finished.`
+    - `generate.py exit code: 0`
+- `run_sample_t2v.sh` 现已按当前 SDPA fallback 模式做长任务适配：
+  - 默认等待窗口已拉长
+  - 当前脚本能直接打印阶段和采样进度
+  - 这次 1280x704 样例完整耗时约 31 分钟，其中采样阶段约 16 分 36 秒
+- `flash_attn` 编译链也继续收敛：
+  - `build_flash_attn_resumable.sh` 与 `setup_wan22.sh` 现已默认 `WAN_FLASH_ATTN_CUDA_ARCHS=80`
+  - 当前 RTX 3090 路径不再默认编译 `sm_90/sm_100/sm_120`
+
+- `flash_attn` 本地编译链已改成仓库内可续编模式：
+  - 当前这次真实编译已从 `pip` 的临时目录转存到 `code/server/wan_local_service/third_party/flash-attn-2.8.3-src`
+  - 已在 `2026-04-24 02:46:53 +0800` 主动中断当前 `pip install flash-attn==2.8.3` 进程，避免继续占住夜间会话
+  - 当前持久快照保留了 `22 / 73` 个 `.o` 目标
+  - 最新已编译目标是 `flash_bwd_hdim96_bf16_causal_sm80.o`，时间为 `2026-04-24 02:41:33 +0800`
+  - 新增 `code/server/wan_local_service/scripts/build_flash_attn_resumable.sh`
+  - `code/server/wan_local_service/scripts/setup_wan22.sh` 现在也会改走同一份持久源码树，不再回到 `pip` 的 `/tmp/pip-install-*` 临时目录
+- 当前 `flash_attn` 持久快照已补充到服务端自测报告：
+  - `docs/reports/self_test/server/2026-04-24_flash_attn_resume_snapshot.md`
+- 新增对 `flash_attn` 编译崩溃的系统级复盘：
+  - 已核对 `/var/log/apt/history.log`
+  - 已核对 `/var/log/kern.log`
+  - 已核对 `/var/log/syslog`
+  - 已核对 `/mnt/c/Users/37545/.wslconfig`
+- 已确认：
+  - `cuda-toolkit-13-0` 曾在真实 WSL 中于 `2026-04-23 23:24` 安装完成
+  - 后续 `flash_attn` 不是停在“找不到 `nvcc`”，而是已经真正进入本地 CUDA/C++ 编译
+  - 从 `2026-04-23 23:28` 到 `2026-04-24 01:46` 之间，多次发生全局 OOM
+  - OOM 现场的主进程是 `cicc` / `cc1plus` / `nvcc`
+  - `2026-04-24 01:46:34` 还出现了用户会话 `systemd` 被 OOM 杀死
+  - 这可以直接解释“Codex 自动退出”和“WSL 看起来崩了”的现象
+- `code/server/wan_local_service/scripts/setup_wan22.sh` 已做保守化修正：
+  - 默认 `WAN_FLASH_ATTN_MAX_JOBS` 从 `4` 下调到 `1`
+  - 在 WSL 中若显式把 `MAX_JOBS` 提高，会输出 OOM 风险提示
+  - 在真正开始 `flash_attn` 编译前，会先检查 `MemAvailable` / `SwapFree`
+  - 会额外提示 `dockerd` / `containerd` / `postgres` 等常驻进程占用
+- 运行时 Python 选择已收敛为更稳定的双路径：
+  - `run_service.sh` / `check_env.sh` 默认优先使用 `code/server/wan_local_service/.venv/bin/python`
+  - `WanRunner` 默认使用当前服务进程自己的解释器，而不是外部 shell 中遗留的 `WAN_PYTHON_BIN`
+- 运行阶段的低内存保守模式已改为显式 opt-in：
+  - 默认不再自动压低 `frame_num` / `sample_steps`
+  - 默认不再启用生成前内存硬门槛
+  - 如确实需要，可显式设置：
+    - `WAN_LOW_MEMORY_PROFILE=1`
+    - `WAN_ENFORCE_RUNTIME_MEMORY_GUARD=1`
+
+- 新增 `code/server/wan_local_service/scripts/check_env.sh`
+- 新增 `code/server/wan_local_service/app/env_report.py`
+- `scripts/run_service.sh` 已增加服务启动前检查：
+  - 运行时 Python 缺失时给出明确修复提示
+  - `fastapi` / `uvicorn` 缺失时给出明确修复提示
+- 当前 workspace 再次复核到的真实环境：
+  - `.venv` 已存在
+  - `third_party/Wan2.2` 已存在
+  - `third_party/Wan2.2-TI2V-5B` 已存在
+  - 最新重复探测里 `nvidia-smi` 已恢复可用
+  - `nvcc` 缺失
+  - 系统 `python3` 仍缺少 `fastapi` / `httpx` / `pytest`，但服务实际运行走的是 `.venv`
+- 因此当前真实状态是：
+  - 服务端单测已通过
+  - FastAPI 实例已真实启动
+  - 真实 `t2v` 样例已生成出视频文件
+  - 当前剩余问题不在“能否出片”，而在性能和保活
+
 - `code/server/wan_local_service/scripts/setup_wan22.sh` 已改为可直接处理完整 `flash_attn` 安装链：
   - `nvcc` 缺失时自动尝试安装 `cuda-toolkit-13-0`
   - 自动创建并激活 `.venv`
@@ -83,7 +207,7 @@
   - `wan/modules/attention.py` 的 `assert FLASH_ATTN_2_AVAILABLE`
 - 这次验证说明：
   - 当前服务端主链路不依赖 Windows Qt 客户端即可直接复现真实生成阻塞
-  - 当前真实主阻塞已收敛到 CUDA toolkit / `nvcc` 可用性，而不是 API 层、任务调度层或 `setuptools` 冲突
+  - 当前真实主阻塞已收敛到 `flash_attn` 本地编译 OOM，而不是 API 层、任务调度层或 `setuptools` 冲突
 
 2026-04-23：
 

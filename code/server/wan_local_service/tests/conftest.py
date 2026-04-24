@@ -31,6 +31,7 @@ def service_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Pa
     monkeypatch.setenv("WAN_GENERATE_PY", str(generate_py))
     monkeypatch.setenv("WAN_DB_PATH", str(storage_dir / "tasks.db"))
     monkeypatch.setenv("WAN_PYTHON_BIN", sys.executable)
+    monkeypatch.setenv("WAN_SKIP_FLASH_ATTN_PRECHECK", "1")
     monkeypatch.setenv("WAN_ALLOWED_SIZES", "1280*704,704*1280")
     monkeypatch.setenv("WAN_DEFAULT_SIZE", "1280*704")
     return {

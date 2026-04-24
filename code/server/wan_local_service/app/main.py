@@ -36,6 +36,12 @@ from .schemas import (
     TaskListItemResponse,
     TaskListResponse,
 )
+from .task_runtime import (
+    build_task_runtime_snapshot,
+    expected_output_path,
+    reconcile_task_completion,
+    recover_interrupted_tasks,
+)
 from .task_runner import TaskRunner
 from .wan_runner import WanRunner
 
@@ -61,10 +67,19 @@ def _task_to_response(task: TaskRecord) -> TaskCreateResponse:
     )
 
 
-def _task_to_detail(task: TaskRecord) -> TaskDetailResponse:
+def _task_to_detail(task: TaskRecord, settings: Settings) -> TaskDetailResponse:
+    runtime_snapshot = build_task_runtime_snapshot(
+        task.log_path,
+        output_path=task.output_path,
+        expected_output=expected_output_path(settings.outputs_dir, task.task_id),
+    )
     return TaskDetailResponse(
         **_task_to_response(task).model_dump(),
-        output_exists=_output_exists(task.output_path),
+        output_exists=runtime_snapshot.output_exists,
+        status_message=runtime_snapshot.status_message,
+        progress_current=runtime_snapshot.progress_current,
+        progress_total=runtime_snapshot.progress_total,
+        progress_percent=runtime_snapshot.progress_percent,
     )
 
 
@@ -96,13 +111,27 @@ def _get_context(request: Request) -> ServiceContext:
     return context
 
 
+def _reconcile_task(context: ServiceContext, task: TaskRecord) -> TaskRecord:
+    return reconcile_task_completion(
+        context.repository,
+        context.settings.outputs_dir,
+        task,
+    )
+
+
+def _reconcile_incomplete_tasks(context: ServiceContext) -> None:
+    tasks = context.repository.list_tasks_by_statuses(("pending", "running"))
+    for task in tasks:
+        _reconcile_task(context, task)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Iterator[None]:
     settings = load_settings()
     settings.ensure_directories()
     init_db(settings.db_path)
     repository = TaskRepository(settings.db_path)
-    repository.recover_interrupted_tasks()
+    recover_interrupted_tasks(repository, settings.outputs_dir)
     runner = TaskRunner(repository, WanRunner(settings))
     await runner.start()
     context = ServiceContext(
@@ -195,7 +224,8 @@ async def get_task(request: Request, task_id: str) -> TaskDetailResponse:
     task = context.repository.get_task(task_id)
     if task is None:
         raise ApiError("task_not_found", f"Task '{task_id}' was not found.")
-    return _task_to_detail(task)
+    task = _reconcile_task(context, task)
+    return _task_to_detail(task, context.settings)
 
 
 @app.get(
@@ -212,7 +242,7 @@ async def list_tasks(
     limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
 ) -> TaskListResponse:
     context = _get_context(request)
-    tasks = context.repository.list_tasks(limit)
+    tasks = [_reconcile_task(context, task) for task in context.repository.list_tasks(limit)]
     return TaskListResponse(
         items=[_task_to_list_item(task) for task in tasks],
         total=context.repository.count_tasks(),
@@ -234,6 +264,7 @@ async def list_results(
     limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
 ) -> ResultListResponse:
     context = _get_context(request)
+    _reconcile_incomplete_tasks(context)
     results = context.repository.list_results(limit)
     return ResultListResponse(
         items=[_task_to_result_item(task) for task in results],

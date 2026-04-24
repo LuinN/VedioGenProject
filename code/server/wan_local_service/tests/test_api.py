@@ -127,3 +127,82 @@ async def test_task_detail_and_results_respect_null_and_output_flags(
     task_list_payload = tasks_response.json()
     assert task_list_payload["total"] >= 2
     assert "output_exists" not in task_list_payload["items"][0]
+
+
+@pytest.mark.anyio
+async def test_task_detail_reports_runtime_progress(
+    service_env: dict[str, Path],
+) -> None:
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            repository = app.state.service_context.repository
+            task = repository.create_task(
+                task_id="task-running-progress",
+                mode="t2v",
+                prompt="progress prompt",
+                size="1280*704",
+                log_path=str(service_env["logs_dir"] / "task-running-progress.log"),
+            )
+            repository.mark_task_running(task.task_id)
+            Path(task.log_path).write_text(
+                "\n".join(
+                    [
+                        "[2026-04-24 11:24:03,984] INFO: Creating WanTI2V pipeline.",
+                        "[2026-04-24 11:25:08,005] INFO: Generating video ...",
+                        " 42%|████▏     | 21/50 [07:18<09:31, 19.72s/it]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            detail_response = await client.get(f"/api/tasks/{task.task_id}")
+
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["status"] == "running"
+    assert detail_payload["output_exists"] is False
+    assert detail_payload["status_message"] == "sampling"
+    assert detail_payload["progress_current"] == 21
+    assert detail_payload["progress_total"] == 50
+    assert detail_payload["progress_percent"] == 42
+
+
+@pytest.mark.anyio
+async def test_startup_and_results_reconcile_running_task_with_output(
+    repository,
+    service_env: dict[str, Path],
+) -> None:
+    task = repository.create_task(
+        task_id="task-recovered-output",
+        mode="t2v",
+        prompt="recovered prompt",
+        size="1280*704",
+        log_path=str(service_env["logs_dir"] / "task-recovered-output.log"),
+    )
+    repository.mark_task_running(task.task_id)
+    output_path = service_env["outputs_dir"] / task.task_id / "result.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("video", encoding="utf-8")
+
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            detail_response = await client.get(f"/api/tasks/{task.task_id}")
+            results_response = await client.get("/api/results")
+
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["status"] == "succeeded"
+    assert detail_payload["output_path"] == str(output_path.resolve())
+    assert detail_payload["output_exists"] is True
+    assert detail_payload["progress_percent"] == 100
+
+    assert results_response.status_code == 200
+    result_payload = results_response.json()
+    assert result_payload["total"] == 1
+    assert result_payload["items"][0]["task_id"] == task.task_id

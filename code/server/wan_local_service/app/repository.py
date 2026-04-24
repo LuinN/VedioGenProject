@@ -132,6 +132,20 @@ class TaskRepository:
             (TASK_STATUS_SUCCEEDED, limit),
         )
 
+    def list_tasks_by_statuses(self, statuses: Iterable[str]) -> list[TaskRecord]:
+        normalized_statuses = tuple(statuses)
+        if not normalized_statuses:
+            return []
+        placeholders = ", ".join("?" for _ in normalized_statuses)
+        return self._list(
+            f"""
+            SELECT * FROM tasks
+            WHERE status IN ({placeholders})
+            ORDER BY create_time DESC
+            """,
+            normalized_statuses,
+        )
+
     def count_tasks(self) -> int:
         return self._count("SELECT COUNT(*) FROM tasks")
 

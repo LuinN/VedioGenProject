@@ -25,6 +25,60 @@ Observed CUDA toolkit facts in the same session:
 - `apt-cache policy nvidia-cuda-toolkit` shows Ubuntu package candidate `12.0.140~12.0.1-4build4`
 - current chosen repair direction remains NVIDIA CUDA `13.x`, not the Ubuntu `12.0` package
 
+## 1A. Current Workspace Recheck
+
+- Date: `2026-04-24`
+- Workspace: `/home/liupengkun/VedioGenProject`
+- Service root: `/home/liupengkun/VedioGenProject/code/server/wan_local_service`
+
+Command-level recheck in the current workspace:
+
+```bash
+cd code/server/wan_local_service
+bash scripts/check_env.sh
+```
+
+Observed results:
+
+- `configured_python_resolved=<missing>`
+- `.venv` missing
+- `third_party/Wan2.2` missing
+- `third_party/Wan2.2-TI2V-5B` missing
+- `nvcc` missing
+- latest repeated `nvidia-smi` probe returned:
+
+```text
+Failed to initialize NVML: GPU access blocked by the operating system
+Failed to properly shut down NVML: GPU access blocked by the operating system
+```
+
+- system `python3` lacks:
+  - `fastapi`
+  - `httpx`
+  - `pytest`
+
+Additional startup preflight check:
+
+```bash
+cd code/server/wan_local_service
+bash scripts/run_service.sh foreground
+```
+
+Observed result:
+
+```text
+[error] Service Python not found: /home/liupengkun/VedioGenProject/code/server/wan_local_service/.venv/bin/python
+[hint] Run: cd /home/liupengkun/VedioGenProject/code/server/wan_local_service && bash scripts/setup_wan22.sh
+[hint] Check details with: cd /home/liupengkun/VedioGenProject/code/server/wan_local_service && bash scripts/check_env.sh
+```
+
+Conclusion for the current workspace snapshot:
+
+- service runtime is not bootstrapped
+- inference runtime is not bootstrapped
+- GPU access is not currently reliable enough to mark as ready
+- the earlier `/mnt/d/projects/videogenproject` validation should be treated as historical evidence, not as the current workspace state
+
 ## 2. `GET /healthz`
 
 Request:
@@ -312,7 +366,7 @@ Conclusion:
   - `librosa`
   - `peft`
 
-Latest real `flash_attn` setup blocker remains:
+Earlier real `flash_attn` setup blocker was:
 
 ```text
 OSError: CUDA_HOME environment variable is not set. Please set it to your CUDA install root.
@@ -324,8 +378,18 @@ Context from the same failure:
 flash_attn was requested, but nvcc was not found
 ```
 
+After `cuda-toolkit-13-0` was installed in the real WSL environment, the blocker moved forward again. The latest root cause is no longer "missing nvcc", but WSL-wide OOM during local `flash_attn` compilation:
+
+```text
+2026-04-24T00:37:45 ... Out of memory: Killed process 3017 (cicc)
+2026-04-24T01:46:34 ... Out of memory: Killed process 1119 (systemd)
+2026-04-24T01:46:37 ... Out of memory: Killed process 6120 (cicc)
+```
+
+This explains the observed symptom that Codex exited and the WSL session looked crashed: once user-session `systemd` was OOM-killed, the interactive session was torn down as collateral damage.
+
 ## 12. Current Blockers
 
 - official TI2V-5B sampling now confirms `flash_attn` is required at runtime
-- `flash_attn` still cannot be built because `CUDA_HOME` is unset and `nvcc` is unavailable in WSL
-- the chosen repair direction is NVIDIA CUDA `13.x` toolkit so it better matches the current `torch 2.11.0+cu130` environment
+- local `flash_attn` compilation can now start in real WSL, but it still fails because the compile stage triggers global OOM
+- the next real repair direction is to stop unnecessary resident services and retry with `WAN_FLASH_ATTN_MAX_JOBS=1`

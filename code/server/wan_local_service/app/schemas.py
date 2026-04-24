@@ -52,6 +52,10 @@ class TaskCreateResponse(TaskResponseBase):
 
 class TaskDetailResponse(TaskResponseBase):
     output_exists: bool
+    status_message: Optional[str] = None
+    progress_current: Optional[int] = None
+    progress_total: Optional[int] = None
+    progress_percent: Optional[int] = None
 
 
 class TaskListItemResponse(TaskResponseBase):
