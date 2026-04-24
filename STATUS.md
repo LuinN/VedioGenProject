@@ -138,10 +138,24 @@
 - Windows 原生编译已通过
 - Windows 原生启动已通过
 - Windows smoke test 已真实打到本地 FastAPI 服务
+- Windows Qt 客户端已支持构建后自动打包：
+  - `cmake --build code\client\qt_wan_chat\build --parallel` 成功链接后会自动刷新 `code/client/qt_wan_chat/release/`
+  - `release/` 内包含 `qt_wan_chat.exe`、Qt DLL、Qt plugins、Qt Multimedia plugin 和 MinGW runtime
+  - `release/` 已加入客户端 `.gitignore`，不会提交生成包
 
 ## 最近一次重要进展
 
 2026-04-25：
+
+- Windows Qt 客户端新增自动打包到本地 release 目录：
+  - 新增 `tools/package_windows.ps1`
+  - CMake `POST_BUILD` 会调用 `windeployqt --compiler-runtime --force --dir <release> <release\qt_wan_chat.exe>`
+  - 打包目录固定为 `code/client/qt_wan_chat/release/`
+  - 打包脚本会校验 release 路径，避免误删客户端 release 之外的目录
+- Windows 原生打包验证：
+  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过，并自动生成 release 目录
+  - `code/client/qt_wan_chat/release/qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 返回 `succeeded`
+  - `windeployqt` 报告 `Cannot find any version of the dxcompiler.dll and dxil.dll`，但本次打包与 smoke 未受阻
 
 - WSL 服务端已补充删除任务协议：
   - 新增 `DELETE /api/tasks/{task_id}`
