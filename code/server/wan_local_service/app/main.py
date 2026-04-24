@@ -3,11 +3,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 from uuid import uuid4
 
 from fastapi import FastAPI, Query, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import Response
 
 from .config import (
     API_MODE_T2V,
@@ -67,7 +67,17 @@ def _task_to_response(task: TaskRecord) -> TaskCreateResponse:
     )
 
 
-def _task_to_detail(task: TaskRecord, settings: Settings) -> TaskDetailResponse:
+def _build_download_url(request: Request, task: TaskRecord, *, output_exists: bool) -> str | None:
+    if task.status != "succeeded" or not output_exists:
+        return None
+    return str(request.url_for("download_result_file", task_id=task.task_id))
+
+
+def _task_to_detail(
+    request: Request,
+    task: TaskRecord,
+    settings: Settings,
+) -> TaskDetailResponse:
     runtime_snapshot = build_task_runtime_snapshot(
         task.log_path,
         output_path=task.output_path,
@@ -80,6 +90,11 @@ def _task_to_detail(task: TaskRecord, settings: Settings) -> TaskDetailResponse:
         progress_current=runtime_snapshot.progress_current,
         progress_total=runtime_snapshot.progress_total,
         progress_percent=runtime_snapshot.progress_percent,
+        download_url=_build_download_url(
+            request,
+            task,
+            output_exists=runtime_snapshot.output_exists,
+        ),
     )
 
 
@@ -87,14 +102,16 @@ def _task_to_list_item(task: TaskRecord) -> TaskListItemResponse:
     return TaskListItemResponse(**_task_to_response(task).model_dump())
 
 
-def _task_to_result_item(task: TaskRecord) -> ResultItemResponse:
+def _task_to_result_item(request: Request, task: TaskRecord) -> ResultItemResponse:
     if task.output_path is None:
         raise ValueError(f"task {task.task_id} is missing output_path")
+    output_exists = _output_exists(task.output_path)
     return ResultItemResponse(
         task_id=task.task_id,
         output_path=task.output_path,
         create_time=task.create_time,
-        output_exists=_output_exists(task.output_path),
+        output_exists=output_exists,
+        download_url=_build_download_url(request, task, output_exists=output_exists),
     )
 
 
@@ -225,7 +242,7 @@ async def get_task(request: Request, task_id: str) -> TaskDetailResponse:
     if task is None:
         raise ApiError("task_not_found", f"Task '{task_id}' was not found.")
     task = _reconcile_task(context, task)
-    return _task_to_detail(task, context.settings)
+    return _task_to_detail(request, task, context.settings)
 
 
 @app.get(
@@ -267,7 +284,44 @@ async def list_results(
     _reconcile_incomplete_tasks(context)
     results = context.repository.list_results(limit)
     return ResultListResponse(
-        items=[_task_to_result_item(task) for task in results],
+        items=[_task_to_result_item(request, task) for task in results],
         total=context.repository.count_results(),
         limit=limit,
+    )
+
+
+@app.get(
+    "/api/results/{task_id}/file",
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+async def download_result_file(request: Request, task_id: str) -> Response:
+    context = _get_context(request)
+    task = context.repository.get_task(task_id)
+    if task is None:
+        raise ApiError("task_not_found", f"Task '{task_id}' was not found.")
+    task = _reconcile_task(context, task)
+    if task.status != "succeeded" or task.output_path is None:
+        raise ApiError(
+            "result_not_ready",
+            f"Task '{task_id}' does not have a downloadable result yet.",
+        )
+    output_path = expected_output_path(context.settings.outputs_dir, task.task_id)
+    if not output_path.exists():
+        raise ApiError(
+            "result_file_missing",
+            f"Result file for task '{task_id}' was not found on the server.",
+        )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{task.task_id}.mp4"',
+        "Content-Length": str(output_path.stat().st_size),
+    }
+    return Response(
+        content=output_path.read_bytes(),
+        media_type="video/mp4",
+        headers=headers,
     )

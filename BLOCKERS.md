@@ -18,10 +18,27 @@ nvcc                                                 missing
 
 - 服务端最小运行链路已经打通，并已真实生成 `result.mp4`
 - 当前剩余阻塞不在“能不能跑”，而在：
-  - 当前 Windows agent 会话对 `\\wsl$` 输出目录访问仍被拒绝
-  - 客户端“打开输出目录”成功路径仍需在真实桌面权限下复验
+  - Windows 客户端还没有接入新的 `download_url` / `GET /api/results/{task_id}/file`，因此还不能把视频保存到 Windows 本地目录
+  - 当前 Windows agent 会话对 `\\wsl$` 输出目录访问仍被拒绝，但这条路径已不再是唯一结果获取方案
 - Windows 客户端代码已接入 `status_message` / `progress_percent` 展示
 - Windows 客户端已用真实任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 复验到 `status=succeeded` 和 `output_path`
+
+### 新增：服务端已提供视频下载端点，但 Windows 客户端尚未接入本地保存链路
+
+当前服务端新增能力：
+
+- `GET /api/tasks/{task_id}` 与 `GET /api/results` 现在会返回 `download_url`
+- `GET /api/results/{task_id}/file` 会直接返回 `video/mp4`
+
+当前真实阻塞：
+
+- Windows Qt 客户端仍主要围绕 `output_path` / `\\wsl$` 路径工作
+- “选择本地目录 -> 下载视频 -> 保存到 Windows 文件夹” 这条客户端链路还没接上
+
+影响：
+
+- 服务端已经不再要求 Windows 会话必须能访问 `\\wsl$`
+- 但客户端在完成对接前，用户仍不能从客户端直接把结果文件保存到本地目录
 
 ### 1. WSL FastAPI 服务在 Windows 客户端轮询期间掉线，后台模式已补上但仍待真实联调复验
 
@@ -207,6 +224,7 @@ Access to the path '\\wsl$\Ubuntu-24.04\home\liupengkun\VedioGenProject\code\ser
 - 客户端已实现 `\\wsl$` 路径转换和错误提示
 - 客户端现已对 `\\wsl$` / `\\wsl.localhost` 路径跳过 `QDir.exists()` 预检查，避免当前 agent 权限问题提前拦截 `explorer.exe`
 - 但“打开输出目录”的成功路径仍未在本会话真实验证
+- 这已不再阻塞结果文件传回客户端，因为服务端已提供 HTTP 下载端点
 
 ### 7. 当前 agent sandbox 不允许本地监听端口复验后台服务 `/healthz`
 

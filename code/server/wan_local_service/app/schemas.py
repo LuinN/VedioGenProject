@@ -56,6 +56,7 @@ class TaskDetailResponse(TaskResponseBase):
     progress_current: Optional[int] = None
     progress_total: Optional[int] = None
     progress_percent: Optional[int] = None
+    download_url: Optional[str] = None
 
 
 class TaskListItemResponse(TaskResponseBase):
@@ -73,6 +74,7 @@ class ResultItemResponse(BaseModel):
     output_path: str
     create_time: str
     output_exists: bool
+    download_url: Optional[str] = None
 
 
 class ResultListResponse(BaseModel):

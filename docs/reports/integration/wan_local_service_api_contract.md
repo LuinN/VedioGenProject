@@ -17,6 +17,7 @@
 - 仅支持 `mode=t2v`
 - 仅支持 `size=1280*704` 或 `size=704*1280`
 - 服务内部固定调用官方 `Wan2.2/generate.py --task ti2v-5B`
+- 生成成功后支持通过 HTTP 下载 `mp4` 结果文件
 
 ## Status Enum
 
@@ -56,6 +57,11 @@
   - 可为 `null`
   - 采样阶段通常返回当前 step、总 step 和百分比
   - 成功完成时可返回 `progress_percent=100`
+- `download_url`
+  - `GET /api/tasks/{task_id}` 与 `GET /api/results` 中返回
+  - `pending` / `running` / `failed` / `output_exists=false`: `null`
+  - `succeeded` 且结果文件存在：绝对 HTTP URL
+  - 客户端应优先使用该 URL 下载视频到本地目录，而不是依赖 `\\wsl$` 路径访问
 
 ## Stable Error Format
 
@@ -78,6 +84,8 @@
 | `invalid_size` | `400 Bad Request` | 请求中的 `size` 不在白名单 |
 | `validation_error` | `422 Unprocessable Entity` | 请求体缺字段、字段类型错误、空 prompt |
 | `task_not_found` | `404 Not Found` | 查询了不存在的任务 ID |
+| `result_not_ready` | `409 Conflict` | 任务尚未成功完成，当前没有可下载结果 |
+| `result_file_missing` | `404 Not Found` | 任务已成功，但服务端结果文件不存在 |
 | `service_not_ready` | `503 Service Unavailable` | 服务上下文未完成初始化 |
 | `wan_execution_failed` | `500 Internal Server Error` | API 层意外内部错误 |
 
@@ -88,19 +96,27 @@
 
 ## Restart Recovery Semantics
 
-服务启动时会扫描遗留 `pending` 与 `running` 任务，并统一改成 `failed`。
+服务启动时会扫描遗留 `pending` 与 `running` 任务。
 
 - 遗留 `pending`
-  - `status = "failed"`
-  - `error_message = "service restarted before task execution"`
+  - 若期望输出文件已存在：
+    - `status = "succeeded"`
+    - `output_path = <outputs/<task_id>/result.mp4>`
+  - 否则：
+    - `status = "failed"`
+    - `error_message = "service restarted before task execution"`
 - 遗留 `running`
-  - `status = "failed"`
-  - `error_message = "service restarted while task was running"`
+  - 若期望输出文件已存在：
+    - `status = "succeeded"`
+    - `output_path = <outputs/<task_id>/result.mp4>`
+  - 否则：
+    - `status = "failed"`
+    - `error_message = "service restarted while task was running"`
 
 共同规则：
 
 - `update_time` 刷新为服务启动时刻
-- `output_path` 保持 `null`
+- 若恢复为 `failed`，`output_path` 保持 `null`
 - `log_path` 保留原值
 
 ## Endpoints
@@ -161,7 +177,8 @@ Running example:
   "status_message": "sampling",
   "progress_current": 9,
   "progress_total": 50,
-  "progress_percent": 18
+  "progress_percent": 18,
+  "download_url": null
 }
 ```
 
@@ -181,7 +198,8 @@ Succeeded example:
   "status_message": "finished",
   "progress_current": 50,
   "progress_total": 50,
-  "progress_percent": 100
+  "progress_percent": 100,
+  "download_url": "http://127.0.0.1:8000/api/results/123e4567-e89b-12d3-a456-426614174000/file"
 }
 ```
 
@@ -201,7 +219,8 @@ Failed example:
   "status_message": null,
   "progress_current": null,
   "progress_total": null,
-  "progress_percent": null
+  "progress_percent": null,
+  "download_url": null
 }
 ```
 
@@ -239,13 +258,35 @@ Success response:
       "task_id": "123e4567-e89b-12d3-a456-426614174000",
       "output_path": "/mnt/d/projects/videogenproject/code/server/wan_local_service/outputs/123e4567-e89b-12d3-a456-426614174000/result.mp4",
       "create_time": "2026-04-23T13:39:00+00:00",
-      "output_exists": true
+      "output_exists": true,
+      "download_url": "http://127.0.0.1:8000/api/results/123e4567-e89b-12d3-a456-426614174000/file"
     }
   ],
   "total": 1,
   "limit": 10
 }
 ```
+
+### `GET /api/results/{task_id}/file`
+
+用途：
+
+- 下载指定任务的结果视频文件
+- 供 Windows 客户端保存到本地目录
+
+成功响应：
+
+- `200 OK`
+- `Content-Type: video/mp4`
+- `Content-Disposition: attachment; filename="<task_id>.mp4"`
+- 响应体为完整 `mp4` 二进制内容
+
+客户端建议：
+
+- 在 `status=succeeded` 且 `download_url != null` 时启用“保存到本地”按钮
+- 使用 `download_url` 发起 `GET`
+- 将响应体写入用户选择的 Windows 本地目录
+- 不要依赖 `output_path` 指向的 WSL 路径做跨系统复制
 
 ## Error Examples
 

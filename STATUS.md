@@ -12,6 +12,7 @@
 ### WSL 服务端
 
 - FastAPI 服务入口与 5 个接口
+- FastAPI 结果文件下载接口 `GET /api/results/{task_id}/file`
 - SQLite 任务持久化
 - 单 worker 串行任务执行器
 - Wan2.2 官方 `generate.py` 调用封装
@@ -20,6 +21,7 @@
 - `setup_wan22.sh` / `run_service.sh` / `run_sample_t2v.sh`
 - `check_env.sh` / `app.env_report`
 - 协议文档、自测报告、集成说明
+- 已为 `GET /api/tasks/{task_id}` / `GET /api/results` 增加 `download_url`
 - 默认模型目录在 README / `.env.example` / `config.py` / 启动脚本之间完成统一
 - `setup_wan22.sh` 已补齐当前真实验证过的缺失运行时依赖：
   - `einops`
@@ -45,8 +47,8 @@
 - `nvcc` 当前仍不在 PATH
 - 当前工作区已经可以启动服务并跑通一次真实 `t2v` 生成
 - 当前未完成项主要剩在：
-  - Windows 当前 agent 会话对 `\\wsl$` 输出目录访问仍被拒绝
-  - 客户端“打开输出目录”成功路径仍需在真实桌面权限下复验
+  - Windows 客户端尚未接入 `download_url` 并把视频保存到 Windows 本地目录
+  - 当前 Windows agent 会话对 `\\wsl$` 输出目录访问仍被拒绝，但这条路径已不再是唯一结果获取方式
 
 ### Windows Qt 客户端
 
@@ -81,6 +83,20 @@
 ## 最近一次重要进展
 
 2026-04-24：
+
+- WSL 服务端已补充结果文件下载协议：
+  - 新增 `GET /api/results/{task_id}/file`
+  - `GET /api/tasks/{task_id}` 与 `GET /api/results` 已新增 `download_url`
+  - 下载成功时返回 `video/mp4` 与 `attachment; filename="<task_id>.mp4"`
+  - 服务端单测已覆盖：
+    - 成功下载
+    - 未完成任务拒绝下载
+    - 任务已成功但结果文件丢失时报错
+  - 真实后台服务已用任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 复验：
+    - 任务详情返回 `download_url`
+    - `GET /api/results/{task_id}/file` 已成功下载到 `/tmp/18439c7f.mp4`
+    - `ffprobe` 确认下载文件仍为有效 `h264` 视频
+  - 这条新链路用于让 Windows 客户端把视频保存到本地目录，不再依赖 `\\wsl$` 共享路径
 
 - Windows Qt 客户端继续对齐服务端最新任务详情契约：
   - `TaskDetail` 已解析 `status_message` / `progress_current` / `progress_total` / `progress_percent`

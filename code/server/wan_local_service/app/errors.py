@@ -11,6 +11,8 @@ ERROR_STATUS_CODES = {
     "invalid_size": status.HTTP_400_BAD_REQUEST,
     "validation_error": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "task_not_found": status.HTTP_404_NOT_FOUND,
+    "result_not_ready": status.HTTP_409_CONFLICT,
+    "result_file_missing": status.HTTP_404_NOT_FOUND,
     "service_not_ready": status.HTTP_503_SERVICE_UNAVAILABLE,
     "wan_execution_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
 }

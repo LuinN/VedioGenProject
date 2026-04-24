@@ -4,10 +4,11 @@
 
 `wan_local_service` 是运行在 WSL / Linux 上的 FastAPI 本地服务，负责：
 
-- 暴露 `GET /healthz`, `POST /api/tasks`, `GET /api/tasks/{task_id}`, `GET /api/tasks`, `GET /api/results`
+- 暴露 `GET /healthz`, `POST /api/tasks`, `GET /api/tasks/{task_id}`, `GET /api/tasks`, `GET /api/results`, `GET /api/results/{task_id}/file`
 - 把客户端提交的 `mode=t2v` 任务落盘到 SQLite
 - 使用单 worker 串行调用官方 `Wan2.2/generate.py`
 - 记录日志、结果文件路径和真实失败原因
+- 在生成成功后通过 HTTP 把 `mp4` 结果传回客户端
 
 当前 MVP 固定范围：
 
@@ -215,9 +216,25 @@ bash scripts/run_sample_t2v.sh
   - `progress_current`
   - `progress_total`
   - `progress_percent`
+  - `download_url`
 - 其中：
   - `status_message` 会反映当前阶段，例如 `creating pipeline`、`loading checkpoints`、`sampling`、`saving video`、`finished`
   - `progress_*` 主要用于长时间采样任务的观测
+  - `download_url` 在 `status=succeeded` 且结果文件存在时可直接用于客户端下载视频
+
+结果文件下载接口：
+
+- `GET /api/results/<task_id>/file`
+  - 成功时返回 `video/mp4`
+  - 响应头包含 `Content-Disposition: attachment; filename="<task_id>.mp4"`
+  - 适合 Windows 客户端把视频保存到本地目录，而不是依赖 `\\wsl$` 路径访问
+
+下载示例：
+
+```bash
+curl --fail --output result.mp4 \
+  http://127.0.0.1:8000/api/results/<task_id>/file
+```
 
 ## 日志目录说明
 

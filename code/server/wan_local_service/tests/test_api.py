@@ -4,8 +4,28 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from starlette.requests import Request
 
-from app.main import app
+from app.errors import ApiError
+from app.main import app, download_result_file
+
+
+def _download_request(task_id: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "app": app,
+            "scheme": "http",
+            "method": "GET",
+            "path": f"/api/results/{task_id}/file",
+            "raw_path": f"/api/results/{task_id}/file".encode("utf-8"),
+            "query_string": b"",
+            "headers": [],
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "root_path": "",
+        }
+    )
 
 
 @pytest.mark.anyio
@@ -116,12 +136,16 @@ async def test_task_detail_and_results_respect_null_and_output_flags(
     assert detail_payload["output_path"] is None
     assert detail_payload["error_message"] is None
     assert detail_payload["output_exists"] is False
+    assert detail_payload["download_url"] is None
 
     assert results_response.status_code == 200
     result_payload = results_response.json()
     assert result_payload["total"] == 1
     assert result_payload["items"][0]["task_id"] == "task-succeeded"
     assert result_payload["items"][0]["output_exists"] is True
+    assert result_payload["items"][0]["download_url"].endswith(
+        "/api/results/task-succeeded/file"
+    )
 
     assert tasks_response.status_code == 200
     task_list_payload = tasks_response.json()
@@ -201,8 +225,87 @@ async def test_startup_and_results_reconcile_running_task_with_output(
     assert detail_payload["output_path"] == str(output_path.resolve())
     assert detail_payload["output_exists"] is True
     assert detail_payload["progress_percent"] == 100
+    assert detail_payload["download_url"].endswith(
+        f"/api/results/{task.task_id}/file"
+    )
 
     assert results_response.status_code == 200
     result_payload = results_response.json()
     assert result_payload["total"] == 1
     assert result_payload["items"][0]["task_id"] == task.task_id
+    assert result_payload["items"][0]["download_url"].endswith(
+        f"/api/results/{task.task_id}/file"
+    )
+
+
+@pytest.mark.anyio
+async def test_result_download_returns_video_file(service_env: dict[str, Path]) -> None:
+    output_path = service_env["outputs_dir"] / "task-downloadable" / "result.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    video_bytes = b"fake-mp4-binary"
+    output_path.write_bytes(video_bytes)
+
+    async with app.router.lifespan_context(app):
+        repository = app.state.service_context.repository
+        task = repository.create_task(
+            task_id="task-downloadable",
+            mode="t2v",
+            prompt="download prompt",
+            size="1280*704",
+            log_path=str(service_env["logs_dir"] / "task-downloadable.log"),
+        )
+        repository.mark_task_succeeded(task.task_id, str(output_path.resolve()))
+        response = await download_result_file(_download_request(task.task_id), task.task_id)
+
+    assert response.status_code == 200
+    assert response.body == video_bytes
+    assert response.media_type == "video/mp4"
+    assert "attachment; filename=\"task-downloadable.mp4\"" in response.headers[
+        "content-disposition"
+    ]
+    assert response.headers["content-length"] == str(len(video_bytes))
+
+
+@pytest.mark.anyio
+async def test_result_download_rejects_unsucceeded_task(
+    service_env: dict[str, Path],
+) -> None:
+    async with app.router.lifespan_context(app):
+        repository = app.state.service_context.repository
+        task = repository.create_task(
+            task_id="task-not-ready",
+            mode="t2v",
+            prompt="pending prompt",
+            size="1280*704",
+            log_path=str(service_env["logs_dir"] / "task-not-ready.log"),
+        )
+
+        with pytest.raises(ApiError) as exc_info:
+            await download_result_file(_download_request(task.task_id), task.task_id)
+
+    assert exc_info.value.code == "result_not_ready"
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_result_download_rejects_missing_output_file(
+    service_env: dict[str, Path],
+) -> None:
+    output_path = service_env["outputs_dir"] / "task-missing-file" / "result.mp4"
+
+    async with app.router.lifespan_context(app):
+        repository = app.state.service_context.repository
+        task = repository.create_task(
+            task_id="task-missing-file",
+            mode="t2v",
+            prompt="missing file prompt",
+            size="1280*704",
+            log_path=str(service_env["logs_dir"] / "task-missing-file.log"),
+        )
+        repository.mark_task_succeeded(task.task_id, str(output_path.resolve()))
+
+        with pytest.raises(ApiError) as exc_info:
+            await download_result_file(_download_request(task.task_id), task.task_id)
+
+    assert exc_info.value.code == "result_file_missing"
+    assert exc_info.value.status_code == 404
