@@ -6,8 +6,10 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable, TextIO
 
-from .config import INTERNAL_WAN_TASK, Settings, TASK_OUTPUT_FILENAME
+from .config import API_MODE_I2V, INTERNAL_WAN_TASK, Settings, TASK_OUTPUT_FILENAME
+from .progress import TaskProgressState, progress_from_log_line
 from .repository import TaskRecord
 
 
@@ -16,6 +18,9 @@ class WanExecutionResult:
     success: bool
     output_path: str | None
     error_message: str | None
+
+
+TaskProgressCallback = Callable[[TaskProgressState], None]
 
 
 def _read_meminfo_kib(field_name: str) -> int | None:
@@ -48,7 +53,11 @@ class WanRunner:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def run_task(self, task: TaskRecord) -> WanExecutionResult:
+    def run_task(
+        self,
+        task: TaskRecord,
+        progress_callback: TaskProgressCallback | None = None,
+    ) -> WanExecutionResult:
         log_path = Path(task.log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         output_dir = self.settings.outputs_dir / task.task_id
@@ -59,11 +68,15 @@ class WanRunner:
 
         with log_path.open("a", encoding="utf-8") as log_file:
             self._write_log_header(log_file, task, command, resource_snapshot)
-            missing_reason = self._check_prerequisites()
+            log_file.flush()
+            missing_reason = self._check_prerequisites(task)
             if missing_reason is not None:
                 log_file.write(f"{missing_reason}\n")
+                log_file.flush()
                 return WanExecutionResult(False, None, missing_reason)
 
+            progress_state = TaskProgressState(status_message="starting")
+            self._emit_progress(progress_callback, progress_state)
             recent_lines: deque[str] = deque(maxlen=40)
             process = subprocess.Popen(
                 command,
@@ -72,15 +85,39 @@ class WanRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
             )
             assert process.stdout is not None
-            for line in process.stdout:
-                log_file.write(line)
+            for line in self._iter_output_records(process.stdout):
+                log_file.write(f"{line}\n")
+                log_file.flush()
                 normalized = self._normalize_log_line(line)
                 if normalized:
                     recent_lines.append(normalized)
+                    next_progress_state = progress_from_log_line(
+                        progress_state,
+                        normalized,
+                    )
+                    if next_progress_state != progress_state:
+                        progress_state = next_progress_state
+                        self._emit_progress(progress_callback, progress_state)
             return_code = process.wait()
+            progress_state = progress_from_log_line(
+                progress_state,
+                f"generate.py exit code: {return_code}",
+            )
+            if return_code == 0 and progress_state.progress_percent != 100:
+                progress_state = TaskProgressState(
+                    status_message="finished",
+                    progress_current=progress_state.progress_total
+                    if progress_state.progress_total is not None
+                    else progress_state.progress_current,
+                    progress_total=progress_state.progress_total,
+                    progress_percent=100,
+                )
+            self._emit_progress(progress_callback, progress_state)
             log_file.write(f"generate.py exit code: {return_code}\n")
+            log_file.flush()
 
         if return_code != 0:
             return WanExecutionResult(
@@ -96,7 +133,12 @@ class WanRunner:
             )
         return WanExecutionResult(True, str(output_file), None)
 
-    def _check_prerequisites(self) -> str | None:
+    def _check_prerequisites(self, task: TaskRecord) -> str | None:
+        if task.mode == API_MODE_I2V:
+            if not task.input_image_path:
+                return "i2v task is missing input_image_path"
+            if not Path(task.input_image_path).exists():
+                return f"input image not found: {task.input_image_path}"
         if not self.settings.wan_repo_dir.exists():
             return f"Wan2.2 repository not found: {self.settings.wan_repo_dir}"
         if not self.settings.wan_generate_py.exists():
@@ -125,6 +167,7 @@ class WanRunner:
     def _build_command(self, task: TaskRecord, output_file: Path) -> list[str]:
         command = [
             self.settings.python_bin,
+            "-u",
             str(self.settings.wan_generate_py),
             "--task",
             INTERNAL_WAN_TASK,
@@ -136,11 +179,17 @@ class WanRunner:
             "True" if self.settings.offload_model else "False",
             "--sample_solver",
             self.settings.sample_solver,
-            "--prompt",
-            task.prompt,
-            "--save_file",
-            str(output_file),
         ]
+        if task.mode == API_MODE_I2V and task.input_image_path is not None:
+            command.extend(["--image", task.input_image_path])
+        command.extend(
+            [
+                "--prompt",
+                task.prompt,
+                "--save_file",
+                str(output_file),
+            ]
+        )
         if self.settings.convert_model_dtype:
             command.append("--convert_model_dtype")
         if self.settings.t5_cpu:
@@ -163,6 +212,7 @@ class WanRunner:
         env.setdefault("MKL_NUM_THREADS", "1")
         env.setdefault("TOKENIZERS_PARALLELISM", "false")
         env.setdefault("CUDA_MODULE_LOADING", "LAZY")
+        env.setdefault("PYTHONUNBUFFERED", "1")
         if self.settings.low_memory_profile:
             env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         return env
@@ -218,6 +268,31 @@ class WanRunner:
     @staticmethod
     def _normalize_log_line(line: str) -> str:
         return line.strip()
+
+    @staticmethod
+    def _iter_output_records(stream: TextIO):
+        buffer = ""
+        while True:
+            char = stream.read(1)
+            if char == "":
+                if buffer.strip():
+                    yield buffer
+                return
+            if char in {"\r", "\n"}:
+                if buffer.strip():
+                    yield buffer
+                    buffer = ""
+                continue
+            buffer += char
+
+    @staticmethod
+    def _emit_progress(
+        callback: TaskProgressCallback | None,
+        progress: TaskProgressState,
+    ) -> None:
+        if callback is None:
+            return
+        callback(progress)
 
     @classmethod
     def _build_failure_message(cls, return_code: int, recent_lines: deque[str]) -> str:

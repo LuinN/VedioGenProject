@@ -354,11 +354,12 @@ def collect_environment_report() -> EnvironmentReport:
 
     import_results = _python_import_results(
         configured_python_resolved,
-        ("fastapi", "uvicorn", "torch", "flash_attn"),
+        ("fastapi", "uvicorn", "torch", "flash_attn", "multipart"),
     )
     for module_name, required_for in (
         ("fastapi", ("service", "inference")),
         ("uvicorn", ("service", "inference")),
+        ("multipart", ("service", "inference")),
         ("torch", ("inference",)),
         ("flash_attn", () if allow_sdpa_fallback else ("inference",)),
     ):

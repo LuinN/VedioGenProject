@@ -11,8 +11,12 @@
 
 ### WSL 服务端
 
-- FastAPI 服务入口与 5 个接口
+- FastAPI 服务入口与 7 个接口
+- FastAPI 轻量进度接口 `GET /api/tasks/{task_id}/progress`
 - FastAPI 结果文件下载接口 `GET /api/results/{task_id}/file`
+- `POST /api/tasks` 现已同时支持：
+  - `application/json` 的 `t2v`
+  - `multipart/form-data` 的 `t2v` / `i2v`
 - SQLite 任务持久化
 - 单 worker 串行任务执行器
 - Wan2.2 官方 `generate.py` 调用封装
@@ -22,6 +26,14 @@
 - `check_env.sh` / `app.env_report`
 - 协议文档、自测报告、集成说明
 - 已为 `GET /api/tasks/{task_id}` / `GET /api/results` 增加 `download_url`
+- 已为任务运行态增加持久化进度字段：
+  - `status_message`
+  - `progress_current`
+  - `progress_total`
+  - `progress_percent`
+- 已为 `i2v` 任务增加输入图片持久化字段：
+  - `input_image_path`
+  - `input_image_exists`
 - 默认模型目录在 README / `.env.example` / `config.py` / 启动脚本之间完成统一
 - `setup_wan22.sh` 已补齐当前真实验证过的缺失运行时依赖：
   - `einops`
@@ -88,6 +100,57 @@
 ## 最近一次重要进展
 
 2026-04-24：
+
+- WSL 服务端已补齐图片 + prompt 生成视频协议：
+  - API `mode` 现支持 `t2v` / `i2v`
+  - `POST /api/tasks` 兼容：
+    - `application/json` 仅 `t2v`
+    - `multipart/form-data` 的 `t2v` / `i2v`
+  - `mode=i2v` 时会把上传图片保存到：
+    - `outputs/<task_id>/input_image.<ext>`
+  - `GET /api/tasks/{task_id}` / `GET /api/tasks` 的任务对象已新增：
+    - `mode`
+    - `size`
+    - `input_image_path`
+  - `GET /api/tasks/{task_id}` 已新增：
+    - `input_image_exists`
+  - `WanRunner` 调用官方 `generate.py` 时，`i2v` 任务会附带 `--image <input_image_path>`
+  - 新增稳定错误码：
+    - `image_required`
+    - `image_not_supported`
+    - `image_too_large`
+    - `image_save_failed`
+  - 服务端测试已覆盖：
+    - JSON `t2v`
+    - multipart `t2v`
+    - multipart `i2v`
+    - 缺图 / 非法格式 / 超大图片
+    - `input_image_path` 落盘
+    - `GET /api/tasks/{task_id}` 返回 `input_image_*`
+    - `WanRunner --image` 参数
+  - 当前服务端测试已提升到：
+    - `PYTHONPATH=. .venv/bin/python -m pytest -q tests`
+    - `31 passed`
+  - `check_env.sh --require service` 现已把 `python-multipart` 作为服务端就绪依赖之一
+  - 本轮没有重跑真实 GPU `i2v` 长任务；当前完成度是“协议、落盘、命令拼装和自测已闭环”
+
+- WSL 服务端已补强实时进度链路，并新增轻量进度协议：
+  - `WanRunner` 现在以非缓冲模式读取 Wan2.2 子进程输出
+  - `tqdm` 的 `\r` 采样进度会被实时拆出、落盘并同步写入 SQLite
+  - `tasks.update_time` 在进度推进时会刷新，不再只在状态切换时更新
+  - 新增 `GET /api/tasks/{task_id}/progress`
+  - 原有 `GET /api/tasks/{task_id}` 也已改为优先返回持久化进度
+  - 服务端测试已覆盖：
+    - 仓库层进度持久化
+    - task runner 透传进度回调
+    - wan runner 实时解析 `tqdm` 采样步数
+    - API 层轻量进度接口
+  - 真实后台服务已复验：
+    - `GET /api/tasks/0dfbe405-19cb-4256-a86b-13c49569a5b5/progress`
+    - 返回 `status_message=finished`
+    - 返回 `progress_current=50`
+    - 返回 `progress_total=50`
+    - 返回 `progress_percent=100`
 
 - WSL 服务端已补充结果文件下载协议：
   - 新增 `GET /api/results/{task_id}/file`

@@ -15,6 +15,7 @@ from .config import (
     TASK_STATUS_SUCCEEDED,
 )
 from .db import connect
+from .progress import TaskProgressState
 
 
 def utcnow_text() -> str:
@@ -31,8 +32,13 @@ class TaskRecord:
     create_time: str
     update_time: str
     output_path: str | None
+    input_image_path: str | None
     error_message: str | None
     log_path: str
+    status_message: str | None
+    progress_current: int | None
+    progress_total: int | None
+    progress_percent: int | None
 
 
 def _row_to_task(row: sqlite3.Row) -> TaskRecord:
@@ -45,8 +51,13 @@ def _row_to_task(row: sqlite3.Row) -> TaskRecord:
         create_time=row["create_time"],
         update_time=row["update_time"],
         output_path=row["output_path"],
+        input_image_path=row["input_image_path"],
         error_message=row["error_message"],
         log_path=row["log_path"],
+        status_message=row["status_message"],
+        progress_current=row["progress_current"],
+        progress_total=row["progress_total"],
+        progress_percent=row["progress_percent"],
     )
 
 
@@ -65,6 +76,7 @@ class TaskRepository:
         prompt: str,
         size: str,
         log_path: str,
+        input_image_path: str | None = None,
     ) -> TaskRecord:
         timestamp = utcnow_text()
         with self._connect() as connection:
@@ -79,10 +91,15 @@ class TaskRepository:
                     create_time,
                     update_time,
                     output_path,
+                    input_image_path,
                     error_message,
-                    log_path
+                    log_path,
+                    status_message,
+                    progress_current,
+                    progress_total,
+                    progress_percent
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -93,8 +110,13 @@ class TaskRepository:
                     timestamp,
                     timestamp,
                     None,
+                    input_image_path,
                     None,
                     log_path,
+                    None,
+                    None,
+                    None,
+                    None,
                 ),
             )
             connection.commit()
@@ -159,10 +181,18 @@ class TaskRepository:
         self._execute(
             """
             UPDATE tasks
-            SET status = ?, update_time = ?, output_path = NULL, error_message = NULL
+            SET
+                status = ?,
+                update_time = ?,
+                output_path = NULL,
+                error_message = NULL,
+                status_message = ?,
+                progress_current = NULL,
+                progress_total = NULL,
+                progress_percent = NULL
             WHERE task_id = ?
             """,
-            (TASK_STATUS_RUNNING, utcnow_text(), task_id),
+            (TASK_STATUS_RUNNING, utcnow_text(), "starting", task_id),
         )
 
     def mark_task_succeeded(self, task_id: str, output_path: str) -> None:
@@ -183,6 +213,28 @@ class TaskRepository:
             WHERE task_id = ?
             """,
             (TASK_STATUS_FAILED, utcnow_text(), error_message, task_id),
+        )
+
+    def update_task_progress(self, task_id: str, progress: TaskProgressState) -> None:
+        self._execute(
+            """
+            UPDATE tasks
+            SET
+                update_time = ?,
+                status_message = ?,
+                progress_current = ?,
+                progress_total = ?,
+                progress_percent = ?
+            WHERE task_id = ?
+            """,
+            (
+                utcnow_text(),
+                progress.status_message,
+                progress.progress_current,
+                progress.progress_total,
+                progress.progress_percent,
+                task_id,
+            ),
         )
 
     def recover_interrupted_tasks(self) -> dict[str, int]:

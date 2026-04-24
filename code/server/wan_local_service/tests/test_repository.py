@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.config import RESTARTED_PENDING_MESSAGE, RESTARTED_RUNNING_MESSAGE
 from app.db import connect
+from app.progress import TaskProgressState
 
 
 def test_list_tasks_returns_newest_first(repository, service_env: dict[str, Path]) -> None:
@@ -73,3 +74,58 @@ def test_recover_interrupted_tasks_marks_pending_and_running_failed(
     assert recovered_running.error_message == RESTARTED_RUNNING_MESSAGE
     assert recovered_running.output_path is None
     assert recovered_running.log_path == running_task.log_path
+
+
+def test_update_task_progress_persists_runtime_fields(
+    repository,
+    service_env: dict[str, Path],
+) -> None:
+    task = repository.create_task(
+        task_id="task-progress",
+        mode="t2v",
+        prompt="progress prompt",
+        size="1280*704",
+        log_path=str(service_env["logs_dir"] / "task-progress.log"),
+    )
+
+    repository.mark_task_running(task.task_id)
+    repository.update_task_progress(
+        task.task_id,
+        TaskProgressState(
+            status_message="sampling",
+            progress_current=21,
+            progress_total=50,
+            progress_percent=42,
+        ),
+    )
+
+    stored = repository.get_task(task.task_id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.status_message == "sampling"
+    assert stored.progress_current == 21
+    assert stored.progress_total == 50
+    assert stored.progress_percent == 42
+
+
+def test_create_task_persists_input_image_path(
+    repository,
+    service_env: dict[str, Path],
+) -> None:
+    input_image_path = service_env["outputs_dir"] / "task-image" / "input_image.png"
+    input_image_path.parent.mkdir(parents=True, exist_ok=True)
+    input_image_path.write_bytes(b"fake-png")
+
+    task = repository.create_task(
+        task_id="task-image",
+        mode="i2v",
+        prompt="image prompt",
+        size="1280*704",
+        log_path=str(service_env["logs_dir"] / "task-image.log"),
+        input_image_path=str(input_image_path.resolve()),
+    )
+
+    stored = repository.get_task(task.task_id)
+    assert stored is not None
+    assert stored.mode == "i2v"
+    assert stored.input_image_path == str(input_image_path.resolve())

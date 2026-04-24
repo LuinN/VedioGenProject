@@ -8,6 +8,25 @@ from starlette.requests import Request
 
 from app.errors import ApiError
 from app.main import app, download_result_file
+from app.progress import TaskProgressState
+
+
+def _multipart_task_fields(
+    *,
+    mode: str,
+    prompt: str,
+    size: str,
+    image: tuple[str, bytes, str] | None = None,
+) -> list[tuple[str, object]]:
+    fields: list[tuple[str, object]] = [
+        ("mode", (None, mode)),
+        ("prompt", (None, prompt)),
+        ("size", (None, size)),
+    ]
+    if image is not None:
+        filename, content, content_type = image
+        fields.append(("image", (filename, content, content_type)))
+    return fields
 
 
 def _download_request(task_id: str) -> Request:
@@ -59,10 +78,67 @@ async def test_create_task_uses_null_semantics(service_env: dict[str, Path]) -> 
 
     assert response.status_code == 201
     payload = response.json()
+    assert payload["mode"] == "t2v"
     assert payload["status"] == "pending"
+    assert payload["size"] == "1280*704"
     assert payload["output_path"] is None
+    assert payload["input_image_path"] is None
     assert payload["error_message"] is None
     assert payload["log_path"].endswith(".log")
+
+
+@pytest.mark.anyio
+async def test_create_task_accepts_multipart_t2v(service_env: dict[str, Path]) -> None:
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/tasks",
+                files=_multipart_task_fields(
+                    mode="t2v",
+                    prompt="A quiet river at sunrise",
+                    size="1280*704",
+                ),
+            )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["mode"] == "t2v"
+    assert payload["status"] == "pending"
+    assert payload["input_image_path"] is None
+
+
+@pytest.mark.anyio
+async def test_create_task_accepts_multipart_i2v_and_saves_image(
+    service_env: dict[str, Path],
+) -> None:
+    image_bytes = b"\x89PNG\r\n\x1a\nfake-png"
+
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/tasks",
+                files=_multipart_task_fields(
+                    mode="i2v",
+                    prompt="A fox looking at the camera",
+                    size="1280*704",
+                    image=("frame.png", image_bytes, "image/png"),
+                ),
+            )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["mode"] == "i2v"
+    assert payload["status"] == "pending"
+    assert payload["input_image_path"] is not None
+    input_image_path = Path(payload["input_image_path"])
+    assert input_image_path.exists()
+    assert input_image_path.read_bytes() == image_bytes
 
 
 @pytest.mark.anyio
@@ -74,7 +150,7 @@ async def test_error_code_and_status_mappings(service_env: dict[str, Path]) -> N
         ) as client:
             unsupported_mode = await client.post(
                 "/api/tasks",
-                json={"mode": "i2v", "prompt": "hello", "size": "1280*704"},
+                json={"mode": "bad-mode", "prompt": "hello", "size": "1280*704"},
             )
             invalid_size = await client.post(
                 "/api/tasks",
@@ -84,6 +160,15 @@ async def test_error_code_and_status_mappings(service_env: dict[str, Path]) -> N
                 "/api/tasks",
                 json={"mode": "t2v", "prompt": "   ", "size": "1280*704"},
             )
+            image_not_allowed = await client.post(
+                "/api/tasks",
+                files=_multipart_task_fields(
+                    mode="t2v",
+                    prompt="hello",
+                    size="1280*704",
+                    image=("frame.png", b"fake", "image/png"),
+                ),
+            )
             missing = await client.get("/api/tasks/missing-task")
 
     assert unsupported_mode.status_code == 400
@@ -92,8 +177,80 @@ async def test_error_code_and_status_mappings(service_env: dict[str, Path]) -> N
     assert invalid_size.json()["error"]["code"] == "invalid_size"
     assert validation.status_code == 422
     assert validation.json()["error"]["code"] == "validation_error"
+    assert image_not_allowed.status_code == 422
+    assert image_not_allowed.json()["error"]["code"] == "validation_error"
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "task_not_found"
+
+
+@pytest.mark.anyio
+async def test_create_i2v_requires_image(service_env: dict[str, Path]) -> None:
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/tasks",
+                files=_multipart_task_fields(
+                    mode="i2v",
+                    prompt="missing image prompt",
+                    size="1280*704",
+                ),
+            )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "image_required"
+
+
+@pytest.mark.anyio
+async def test_create_i2v_rejects_unsupported_image_type(
+    service_env: dict[str, Path],
+) -> None:
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/tasks",
+                files=_multipart_task_fields(
+                    mode="i2v",
+                    prompt="bad image prompt",
+                    size="1280*704",
+                    image=("frame.gif", b"GIF89a", "image/gif"),
+                ),
+            )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "image_not_supported"
+
+
+@pytest.mark.anyio
+async def test_create_i2v_rejects_oversized_image(
+    service_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WAN_MAX_INPUT_IMAGE_BYTES", "1024")
+    oversized_image = b"a" * 1025
+
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/tasks",
+                files=_multipart_task_fields(
+                    mode="i2v",
+                    prompt="large image prompt",
+                    size="1280*704",
+                    image=("frame.png", oversized_image, "image/png"),
+                ),
+            )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "image_too_large"
 
 
 @pytest.mark.anyio
@@ -103,6 +260,9 @@ async def test_task_detail_and_results_respect_null_and_output_flags(
     output_path = service_env["outputs_dir"] / "task-succeeded" / "result.mp4"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("video", encoding="utf-8")
+    input_image_path = service_env["outputs_dir"] / "task-pending" / "input_image.png"
+    input_image_path.parent.mkdir(parents=True, exist_ok=True)
+    input_image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-png")
 
     async with app.router.lifespan_context(app):
         async with AsyncClient(
@@ -112,10 +272,11 @@ async def test_task_detail_and_results_respect_null_and_output_flags(
             repository = app.state.service_context.repository
             pending = repository.create_task(
                 task_id="task-pending",
-                mode="t2v",
+                mode="i2v",
                 prompt="pending prompt",
                 size="1280*704",
                 log_path=str(service_env["logs_dir"] / "task-pending.log"),
+                input_image_path=str(input_image_path.resolve()),
             )
             succeeded = repository.create_task(
                 task_id="task-succeeded",
@@ -132,8 +293,12 @@ async def test_task_detail_and_results_respect_null_and_output_flags(
 
     assert detail_response.status_code == 200
     detail_payload = detail_response.json()
+    assert detail_payload["mode"] == "i2v"
     assert detail_payload["status"] == "pending"
+    assert detail_payload["size"] == "1280*704"
     assert detail_payload["output_path"] is None
+    assert detail_payload["input_image_path"] == str(input_image_path.resolve())
+    assert detail_payload["input_image_exists"] is True
     assert detail_payload["error_message"] is None
     assert detail_payload["output_exists"] is False
     assert detail_payload["download_url"] is None
@@ -192,6 +357,56 @@ async def test_task_detail_reports_runtime_progress(
     assert detail_payload["progress_current"] == 21
     assert detail_payload["progress_total"] == 50
     assert detail_payload["progress_percent"] == 42
+
+
+@pytest.mark.anyio
+async def test_task_progress_endpoint_returns_persisted_progress(
+    service_env: dict[str, Path],
+) -> None:
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            repository = app.state.service_context.repository
+            task = repository.create_task(
+                task_id="task-progress-endpoint",
+                mode="t2v",
+                prompt="progress endpoint prompt",
+                size="1280*704",
+                log_path=str(service_env["logs_dir"] / "task-progress-endpoint.log"),
+            )
+            repository.mark_task_running(task.task_id)
+            repository.update_task_progress(
+                task.task_id,
+                TaskProgressState(
+                    status_message="sampling",
+                    progress_current=9,
+                    progress_total=50,
+                    progress_percent=18,
+                ),
+            )
+
+            progress_response = await client.get(f"/api/tasks/{task.task_id}/progress")
+            detail_response = await client.get(f"/api/tasks/{task.task_id}")
+
+    assert progress_response.status_code == 200
+    progress_payload = progress_response.json()
+    assert progress_payload["task_id"] == task.task_id
+    assert progress_payload["status"] == "running"
+    assert progress_payload["output_exists"] is False
+    assert progress_payload["status_message"] == "sampling"
+    assert progress_payload["progress_current"] == 9
+    assert progress_payload["progress_total"] == 50
+    assert progress_payload["progress_percent"] == 18
+    assert progress_payload["download_url"] is None
+
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["status_message"] == "sampling"
+    assert detail_payload["progress_current"] == 9
+    assert detail_payload["progress_total"] == 50
+    assert detail_payload["progress_percent"] == 18
 
 
 @pytest.mark.anyio

@@ -9,6 +9,10 @@ from fastapi.responses import JSONResponse
 ERROR_STATUS_CODES = {
     "unsupported_mode": status.HTTP_400_BAD_REQUEST,
     "invalid_size": status.HTTP_400_BAD_REQUEST,
+    "image_required": status.HTTP_400_BAD_REQUEST,
+    "image_not_supported": status.HTTP_400_BAD_REQUEST,
+    "image_too_large": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+    "image_save_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "validation_error": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "task_not_found": status.HTTP_404_NOT_FOUND,
     "result_not_ready": status.HTTP_409_CONFLICT,

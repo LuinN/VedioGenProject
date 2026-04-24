@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 
 SERVICE_NAME = "wan-local-service"
 API_MODE_T2V = "t2v"
+API_MODE_I2V = "i2v"
+API_MODES = (API_MODE_T2V, API_MODE_I2V)
 INTERNAL_WAN_TASK = "ti2v-5B"
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_RUNNING = "running"
@@ -27,6 +29,14 @@ DEFAULT_SIZE = "1280*704"
 DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
 TASK_OUTPUT_FILENAME = "result.mp4"
+DEFAULT_MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024
+SUPPORTED_INPUT_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
+SUPPORTED_INPUT_IMAGE_CONTENT_TYPES = {
+    ".png": ("image/png",),
+    ".jpg": ("image/jpeg", "image/jpg"),
+    ".jpeg": ("image/jpeg", "image/jpg"),
+    ".webp": ("image/webp",),
+}
 
 
 def _parse_env_bool(raw_value: str | None, default: bool) -> bool:
@@ -88,6 +98,7 @@ class Settings:
     python_bin: str
     allowed_sizes: tuple[str, ...]
     default_size: str
+    max_input_image_bytes: int
     low_memory_profile: bool
     offload_model: bool
     t5_cpu: bool
@@ -178,6 +189,9 @@ def load_settings() -> Settings:
         python_bin=os.getenv("WAN_INFERENCE_PYTHON_BIN") or sys.executable,
         allowed_sizes=allowed_sizes,
         default_size=default_size,
+        max_input_image_bytes=int(
+            os.getenv("WAN_MAX_INPUT_IMAGE_BYTES") or DEFAULT_MAX_INPUT_IMAGE_BYTES
+        ),
         low_memory_profile=low_memory_profile,
         offload_model=_parse_env_bool(os.getenv("WAN_OFFLOAD_MODEL"), True),
         t5_cpu=_parse_env_bool(os.getenv("WAN_T5_CPU"), True),

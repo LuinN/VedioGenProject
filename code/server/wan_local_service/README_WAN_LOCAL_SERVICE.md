@@ -4,15 +4,17 @@
 
 `wan_local_service` 是运行在 WSL / Linux 上的 FastAPI 本地服务，负责：
 
-- 暴露 `GET /healthz`, `POST /api/tasks`, `GET /api/tasks/{task_id}`, `GET /api/tasks`, `GET /api/results`, `GET /api/results/{task_id}/file`
-- 把客户端提交的 `mode=t2v` 任务落盘到 SQLite
+- 暴露 `GET /healthz`, `POST /api/tasks`, `GET /api/tasks/{task_id}`, `GET /api/tasks/{task_id}/progress`, `GET /api/tasks`, `GET /api/results`, `GET /api/results/{task_id}/file`
+- 把客户端提交的 `mode=t2v` / `mode=i2v` 任务落盘到 SQLite
 - 使用单 worker 串行调用官方 `Wan2.2/generate.py`
 - 记录日志、结果文件路径和真实失败原因
 - 在生成成功后通过 HTTP 把 `mp4` 结果传回客户端
 
 当前 MVP 固定范围：
 
-- 仅支持 API `mode=t2v`
+- API 支持：
+  - `mode=t2v`：纯文本生成视频
+  - `mode=i2v`：图片 + prompt 生成视频
 - 内部固定调用 `Wan2.2-TI2V-5B`
 - 单机串行执行
 - 不支持多模型切换、Redis、Celery、Docker、鉴权
@@ -54,7 +56,7 @@ bash scripts/check_env.sh
 - `third_party/Wan2.2-TI2V-5B`
 - `nvidia-smi`
 - `nvcc`
-- `fastapi` / `uvicorn` / `torch` / `flash_attn` 导入状态
+- `fastapi` / `uvicorn` / `multipart` / `torch` / `flash_attn` 导入状态
 
 如果只想把服务启动条件当成硬门槛检查，可以执行：
 
@@ -194,17 +196,59 @@ cd code/server/wan_local_service
 bash scripts/run_sample_t2v.sh
 ```
 
+任务创建协议补充：
+
+- `application/json`
+  - 仅兼容 `mode=t2v`
+- `multipart/form-data`
+  - 支持 `mode=t2v` 和 `mode=i2v`
+  - `mode=i2v` 时必须上传 `image`
+- `image` 支持格式：
+  - `png`
+  - `jpg`
+  - `jpeg`
+  - `webp`
+- 默认图片大小上限：
+  - `20971520` bytes，也就是 `20 MiB`
+
+`curl` 示例：
+
+```bash
+curl --fail http://127.0.0.1:8000/api/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"t2v","prompt":"A quiet river at sunrise","size":"1280*704"}'
+```
+
+```bash
+curl --fail http://127.0.0.1:8000/api/tasks \
+  -F mode=i2v \
+  -F prompt='A fox looking at the camera' \
+  -F size='1280*704' \
+  -F image=@./frame.png
+```
+
 ## 输出目录说明
 
 - SQLite 数据库：`storage/tasks.db`
 - 日志文件：`logs/<task_id>.log`
+- 输入图片：`outputs/<task_id>/input_image.<ext>`
 - 结果文件：`outputs/<task_id>/result.mp4`
 
 返回语义固定如下：
 
+- `mode`
+  - `t2v` 或 `i2v`
+- `size`
+  - 当前白名单为 `1280*704` / `704*1280`
 - `output_path`
   - `pending` / `running` / `failed`: `null`
   - `succeeded`: 绝对路径字符串
+- `input_image_path`
+  - `t2v`: `null`
+  - `i2v`: 任务目录下保存的输入图片绝对路径
+- `input_image_exists`
+  - 仅在 `GET /api/tasks/{task_id}` 返回
+  - `input_image_path` 指向的真实文件存在为 `true`
 - `error_message`
   - `pending` / `running` / `succeeded`: `null`
   - `failed`: 非空字符串，优先返回前置检查失败原因或日志尾部的真实错误摘要，并附带 `generate.py exit code`
@@ -212,6 +256,18 @@ bash scripts/run_sample_t2v.sh
   - 任务创建成功后立即分配为绝对路径字符串
 - `GET /api/tasks/{task_id}` 额外返回：
   - `output_exists`
+  - `input_image_exists`
+  - `status_message`
+  - `progress_current`
+  - `progress_total`
+  - `progress_percent`
+  - `download_url`
+- `GET /api/tasks/{task_id}/progress` 返回：
+  - `task_id`
+  - `status`
+  - `update_time`
+  - `output_exists`
+  - `error_message`
   - `status_message`
   - `progress_current`
   - `progress_total`
@@ -221,6 +277,13 @@ bash scripts/run_sample_t2v.sh
   - `status_message` 会反映当前阶段，例如 `creating pipeline`、`loading checkpoints`、`sampling`、`saving video`、`finished`
   - `progress_*` 主要用于长时间采样任务的观测
   - `download_url` 在 `status=succeeded` 且结果文件存在时可直接用于客户端下载视频
+  - `update_time` 会在进度推进时刷新，可用于判断任务是否仍在前进
+
+进度轮询建议：
+
+- 运行中的任务优先轮询 `GET /api/tasks/<task_id>/progress`
+- 需要完整任务详情时，再请求 `GET /api/tasks/<task_id>`
+- 当前服务会把 Wan2.2 子进程输出实时落盘并持久化最近进度，不再只依赖事后扫完整日志
 
 结果文件下载接口：
 
@@ -281,7 +344,7 @@ FastAPI 自动文档只作为机器可读补充，不替代主协议文档。
 - `WanS2V`
 - `WanAnimate`
 
-这意味着即使当前服务只跑 `mode=t2v`，也会在模块导入阶段触发额外依赖链。当前真实验证过的缺口包括：
+这意味着即使当前服务只跑 `mode=t2v` / `mode=i2v`，也会在模块导入阶段触发额外依赖链。当前真实验证过的缺口包括：
 
 - `einops`
 - `decord`

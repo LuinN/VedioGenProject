@@ -22,7 +22,7 @@ class HealthResponse(BaseModel):
 class TaskCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: str = Field(..., description="Only t2v is supported by the MVP service.")
+    mode: str = Field(..., description="Supported modes: t2v or i2v.")
     prompt: str = Field(..., description="The text prompt used to generate the video.")
     size: str = Field(..., description="The output resolution token.")
 
@@ -37,9 +37,12 @@ class TaskCreateRequest(BaseModel):
 
 class TaskResponseBase(BaseModel):
     task_id: str
+    mode: str
     status: str
     prompt: str
+    size: str
     output_path: Optional[str] = None
+    input_image_path: Optional[str] = None
     error_message: Optional[str] = None
     log_path: str
     create_time: str
@@ -52,6 +55,20 @@ class TaskCreateResponse(TaskResponseBase):
 
 class TaskDetailResponse(TaskResponseBase):
     output_exists: bool
+    input_image_exists: bool
+    status_message: Optional[str] = None
+    progress_current: Optional[int] = None
+    progress_total: Optional[int] = None
+    progress_percent: Optional[int] = None
+    download_url: Optional[str] = None
+
+
+class TaskProgressResponse(BaseModel):
+    task_id: str
+    status: str
+    update_time: str
+    output_exists: bool
+    error_message: Optional[str] = None
     status_message: Optional[str] = None
     progress_current: Optional[int] = None
     progress_total: Optional[int] = None

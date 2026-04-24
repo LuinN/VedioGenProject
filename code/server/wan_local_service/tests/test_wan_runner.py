@@ -80,6 +80,58 @@ print("generation finished")
     assert Path(result.output_path).exists()
 
 
+def test_wan_runner_emits_realtime_progress_updates(
+    repository,
+    service_env: dict[str, Path],
+) -> None:
+    service_env["generate_py"].write_text(
+        """
+import pathlib
+import sys
+
+args = sys.argv[1:]
+save_file = pathlib.Path(args[args.index("--save_file") + 1])
+save_file.parent.mkdir(parents=True, exist_ok=True)
+
+print("Creating WanTI2V pipeline.", flush=True)
+print("Generating video ...", flush=True)
+sys.stderr.write(" 42%|████▏     | 21/50 [07:18<09:31, 19.72s/it]\\r")
+sys.stderr.flush()
+print("Saving generated video to " + str(save_file), flush=True)
+save_file.write_text("video-bytes", encoding="utf-8")
+print("Finished.", flush=True)
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings()
+    task = repository.create_task(
+        task_id="task-progress-updates",
+        mode="t2v",
+        prompt="progress prompt",
+        size="1280*704",
+        log_path=str(service_env["logs_dir"] / "task-progress-updates.log"),
+    )
+
+    updates = []
+    result = WanRunner(settings).run_task(task, progress_callback=updates.append)
+
+    assert result.success is True
+    assert any(update.status_message == "creating pipeline" for update in updates)
+    assert any(
+        update.status_message == "sampling"
+        and update.progress_current == 21
+        and update.progress_total == 50
+        and update.progress_percent == 42
+        for update in updates
+    )
+    assert updates[-1].status_message == "finished"
+    assert updates[-1].progress_percent == 100
+    log_text = Path(task.log_path).read_text(encoding="utf-8")
+    assert "42%|████▏     | 21/50" in log_text
+
+
 def test_wan_runner_uses_low_memory_generation_profile_in_command_log(
     repository,
     service_env: dict[str, Path],
@@ -119,6 +171,69 @@ print("generation finished")
     assert "--offload_model True" in log_text
     assert "--t5_cpu" in log_text
     assert "--convert_model_dtype" in log_text
+
+
+def test_wan_runner_adds_image_argument_for_i2v_tasks(
+    repository,
+    service_env: dict[str, Path],
+) -> None:
+    service_env["generate_py"].write_text(
+        """
+import pathlib
+import sys
+
+args = sys.argv[1:]
+image_file = pathlib.Path(args[args.index("--image") + 1])
+save_file = pathlib.Path(args[args.index("--save_file") + 1])
+assert image_file.exists()
+save_file.parent.mkdir(parents=True, exist_ok=True)
+save_file.write_text("video-bytes", encoding="utf-8")
+print("using image", image_file, flush=True)
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    input_image = service_env["outputs_dir"] / "task-i2v" / "input_image.png"
+    input_image.parent.mkdir(parents=True, exist_ok=True)
+    input_image.write_bytes(b"\x89PNG\r\n\x1a\nfake-png")
+
+    settings = load_settings()
+    task = repository.create_task(
+        task_id="task-i2v",
+        mode="i2v",
+        prompt="image prompt",
+        size="1280*704",
+        log_path=str(service_env["logs_dir"] / "task-i2v.log"),
+        input_image_path=str(input_image.resolve()),
+    )
+
+    result = WanRunner(settings).run_task(task)
+
+    assert result.success is True
+    log_text = Path(task.log_path).read_text(encoding="utf-8")
+    assert "--image" in log_text
+    assert str(input_image.resolve()) in log_text
+
+
+def test_wan_runner_fails_early_when_i2v_input_image_is_missing(
+    repository,
+    service_env: dict[str, Path],
+) -> None:
+    settings = load_settings()
+    task = repository.create_task(
+        task_id="task-i2v-missing-image",
+        mode="i2v",
+        prompt="missing image prompt",
+        size="1280*704",
+        log_path=str(service_env["logs_dir"] / "task-i2v-missing-image.log"),
+    )
+
+    result = WanRunner(settings).run_task(task)
+
+    assert result.success is False
+    assert result.output_path is None
+    assert result.error_message == "i2v task is missing input_image_path"
 
 
 def test_wan_runner_fails_early_when_runtime_memory_guard_triggers(

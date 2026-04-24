@@ -8,6 +8,7 @@
   - `GET /healthz`
   - `POST /api/tasks`
   - `GET /api/tasks/{task_id}`
+  - `GET /api/tasks/{task_id}/progress`
   - `GET /api/tasks`
   - `GET /api/results`
 
@@ -20,6 +21,7 @@ Contract stability for Windows parallel development:
   - `progress_current`
   - `progress_total`
   - `progress_percent`
+- `GET /api/tasks/{task_id}/progress` now provides a lightweight progress protocol for high-frequency polling
 - restart recovery strings remain:
   - `service restarted before task execution`
   - `service restarted while task was running`
@@ -190,7 +192,8 @@ Windows 侧若要打开目录，应由 Windows Codex 转换为：
 
 ## API Notes For Client
 
-- 客户端建议每 2 秒轮询一次 `GET /api/tasks/{task_id}`
+- 客户端建议在任务运行时每 1 到 2 秒轮询一次 `GET /api/tasks/{task_id}/progress`
+- 需要完整任务信息时，再请求 `GET /api/tasks/{task_id}`
 - `failed` 任务请直接展示 `error_message`
 - 最新服务端实现会优先把日志尾部的真实错误摘要折叠进 `error_message`，例如：
   - `AssertionError (generate.py exit code 1)`

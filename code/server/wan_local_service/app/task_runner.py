@@ -67,7 +67,13 @@ class TaskRunner:
         if running_task is None:
             return
         try:
-            result = self.wan_runner.run_task(running_task)
+            result = self.wan_runner.run_task(
+                running_task,
+                progress_callback=lambda progress: self.repository.update_task_progress(
+                    task_id,
+                    progress,
+                ),
+            )
         except Exception as exc:  # pragma: no cover - defensive safety net
             self.repository.mark_task_failed(task_id, str(exc) or repr(exc))
             return

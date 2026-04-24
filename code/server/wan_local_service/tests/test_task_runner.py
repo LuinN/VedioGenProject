@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from app.progress import TaskProgressState
 from app.repository import TaskRecord
 from app.task_runner import TaskRunner
 from app.wan_runner import WanExecutionResult
@@ -12,15 +13,24 @@ class SuccessfulWanRunner:
     def __init__(self, output_path: Path) -> None:
         self.output_path = output_path
 
-    def run_task(self, task: TaskRecord) -> WanExecutionResult:
+    def run_task(self, task: TaskRecord, progress_callback=None) -> WanExecutionResult:
         Path(task.log_path).write_text("worker log", encoding="utf-8")
+        if progress_callback is not None:
+            progress_callback(
+                TaskProgressState(
+                    status_message="sampling",
+                    progress_current=21,
+                    progress_total=50,
+                    progress_percent=42,
+                )
+            )
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.output_path.write_text("video-bytes", encoding="utf-8")
         return WanExecutionResult(True, str(self.output_path), None)
 
 
 class FailedWanRunner:
-    def run_task(self, task: TaskRecord) -> WanExecutionResult:
+    def run_task(self, task: TaskRecord, progress_callback=None) -> WanExecutionResult:
         Path(task.log_path).write_text("worker log", encoding="utf-8")
         return WanExecutionResult(False, None, "simulated wan failure")
 
@@ -49,6 +59,10 @@ def test_task_runner_marks_success(repository, service_env: dict[str, Path]) -> 
     assert stored.status == "succeeded"
     assert stored.output_path == str(output_path)
     assert stored.error_message is None
+    assert stored.status_message == "sampling"
+    assert stored.progress_current == 21
+    assert stored.progress_total == 50
+    assert stored.progress_percent == 42
 
 
 def test_task_runner_marks_failure(repository, service_env: dict[str, Path]) -> None:

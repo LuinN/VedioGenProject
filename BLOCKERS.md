@@ -2,6 +2,35 @@
 
 ## 当前真实阻塞
 
+### 新增：`i2v` 上传协议已完成，但真实 GPU `i2v` 长任务还没在本轮重跑
+
+当前状态：
+
+- 服务端已经支持：
+  - `mode=i2v`
+  - `multipart/form-data`
+  - 输入图片保存到 `outputs/<task_id>/input_image.<ext>`
+  - `WanRunner` 调用官方 `generate.py --image <input_image_path>`
+- 新增协议和落盘逻辑已通过服务端自测：
+  - `31 passed`
+- `check_env.sh --require service` 也已纳入 `python-multipart` 检查
+
+当前未完成的真实验证：
+
+- 本轮没有在真实 GPU 环境里重新跑一条完整 `i2v` 长任务
+- 当前 agent 从独立命令会话直接探测临时前台端口时表现不稳定，不适合把“跨会话 HTTP 联调”当成这轮真实验收手段
+- 因此当前对 `i2v` 的完成度是：
+  - 协议完成
+  - 图片落盘完成
+  - `--image` 命令拼装完成
+  - 单测完成
+  - 真实 GPU `i2v` 端到端尚待补跑
+
+影响：
+
+- 服务端代码已经具备 Windows 客户端接入 `i2v` 的前置条件
+- 但真实推理性能、真实日志形态和最终视频产出仍需要用一条 `i2v` 任务再复验一次
+
 ### 新增：当前 workspace 已具备真实出片所需的最小服务端环境
 
 当前会话真实检查结果：
@@ -20,8 +49,23 @@ nvcc                                                 missing
 - 当前剩余阻塞不在“能不能跑”，而在：
   - Windows 客户端调用系统默认播放器播放本地视频仍需真实桌面会话手动复验
   - 当前 Windows agent 会话对 `\\wsl$` 输出目录访问仍被拒绝，但这条路径已不再是唯一结果获取方案
+- 服务端实时进度链路和轻量进度协议已完成，不再是 blocker
 - Windows 客户端代码已接入 `status_message` / `progress_percent` 展示
 - Windows 客户端已用真实任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 复验到 `status=succeeded` 和 `output_path`
+
+### 新增：服务端已补实时进度协议，Windows 客户端尚未决定是否切换到轻量轮询端点
+
+当前服务端新增能力：
+
+- `GET /api/tasks/{task_id}/progress`
+- `update_time` 会在进度推进时刷新
+- `status_message` / `progress_*` 已实时持久化到 SQLite
+
+当前状态：
+
+- 现有 Windows 客户端继续轮询 `GET /api/tasks/{task_id}` 也能拿到进度
+- 新的轻量进度端点不是当前功能 blocker
+- 但如果后续要降低轮询开销，Windows 侧应评估是否切到 `/progress`
 
 ### 新增：客户端下载与本地持久视频列表已接入，播放动作仍需桌面复验
 

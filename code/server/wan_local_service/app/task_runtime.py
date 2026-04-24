@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,12 +10,8 @@ from .config import (
     TASK_STATUS_RUNNING,
     TASK_STATUS_SUCCEEDED,
 )
+from .progress import TaskProgressState, merge_progress_states, progress_from_log_line
 from .repository import TaskRecord, TaskRepository
-
-
-_PROGRESS_RE = re.compile(
-    r"(?P<percent>\d{1,3})%\|.*?\|\s*(?P<current>\d+)/(?P<total>\d+)\s*\["
-)
 
 
 @dataclass(slots=True)
@@ -104,44 +98,82 @@ def build_task_runtime_snapshot(
             progress_percent=100 if resolved_output else None,
         )
 
-    status_message: str | None = "output available" if resolved_output else None
-    progress_current: int | None = None
-    progress_total: int | None = None
-    progress_percent: int | None = 100 if resolved_output else None
+    progress_state = TaskProgressState()
 
     try:
         with path.open("r", encoding="utf-8") as log_file:
             for raw_line in log_file:
-                line = raw_line.strip()
-                if not line:
-                    continue
-
-                progress_match = _PROGRESS_RE.search(line)
-                if progress_match is not None:
-                    progress_current = int(progress_match.group("current"))
-                    progress_total = int(progress_match.group("total"))
-                    progress_percent = int(progress_match.group("percent"))
-                    status_message = "sampling"
-                    continue
-
-                if "Creating WanTI2V pipeline." in line:
-                    status_message = "creating pipeline"
-                elif "Creating WanModel" in line or "loading " in line:
-                    status_message = "loading checkpoints"
-                elif "Generating video ..." in line:
-                    status_message = "sampling"
-                elif "Saving generated video to " in line:
-                    status_message = "saving video"
-                elif line == "generate.py exit code: 0" or "Finished." in line:
-                    status_message = "finished"
-                    progress_percent = 100
+                progress_state = progress_from_log_line(progress_state, raw_line)
     except OSError:
         pass
 
+    if resolved_output and progress_state.progress_percent is None:
+        progress_state.progress_percent = 100
+    if resolved_output and progress_state.status_message is None:
+        progress_state.status_message = "output available"
+
     return TaskRuntimeSnapshot(
         output_exists=resolved_output,
-        status_message=status_message,
-        progress_current=progress_current,
-        progress_total=progress_total,
-        progress_percent=progress_percent,
+        status_message=progress_state.status_message,
+        progress_current=progress_state.progress_current,
+        progress_total=progress_state.progress_total,
+        progress_percent=progress_state.progress_percent,
+    )
+
+
+def build_task_progress_snapshot(
+    task: TaskRecord,
+    *,
+    expected_output: Path | None = None,
+) -> TaskRuntimeSnapshot:
+    stored_state = TaskProgressState(
+        status_message=task.status_message,
+        progress_current=task.progress_current,
+        progress_total=task.progress_total,
+        progress_percent=task.progress_percent,
+    )
+    if any(
+        value is not None
+        for value in (
+            stored_state.status_message,
+            stored_state.progress_current,
+            stored_state.progress_total,
+            stored_state.progress_percent,
+        )
+    ):
+        resolved_output = False
+        if task.output_path:
+            resolved_output = Path(task.output_path).exists()
+        if not resolved_output and expected_output is not None:
+            resolved_output = expected_output.exists()
+        fallback = build_task_runtime_snapshot(
+            task.log_path,
+            output_path=task.output_path,
+            expected_output=expected_output,
+        )
+        merged = merge_progress_states(
+            TaskProgressState(
+                status_message=fallback.status_message,
+                progress_current=fallback.progress_current,
+                progress_total=fallback.progress_total,
+                progress_percent=fallback.progress_percent,
+            ),
+            stored_state,
+        )
+        if resolved_output and merged.progress_percent is None:
+            merged.progress_percent = 100
+        if resolved_output and merged.status_message is None:
+            merged.status_message = "output available"
+        return TaskRuntimeSnapshot(
+            output_exists=resolved_output or fallback.output_exists,
+            status_message=merged.status_message,
+            progress_current=merged.progress_current,
+            progress_total=merged.progress_total,
+            progress_percent=merged.progress_percent,
+        )
+
+    return build_task_runtime_snapshot(
+        task.log_path,
+        output_path=task.output_path,
+        expected_output=expected_output,
     )
