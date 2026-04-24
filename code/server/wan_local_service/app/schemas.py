@@ -76,6 +76,11 @@ class TaskProgressResponse(BaseModel):
     download_url: Optional[str] = None
 
 
+class TaskDeleteResponse(BaseModel):
+    task_id: str
+    deleted: bool
+
+
 class TaskListItemResponse(TaskResponseBase):
     pass
 

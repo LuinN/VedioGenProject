@@ -5,6 +5,7 @@
 `wan_local_service` 是运行在 WSL / Linux 上的 FastAPI 本地服务，负责：
 
 - 暴露 `GET /healthz`, `POST /api/tasks`, `GET /api/tasks/{task_id}`, `GET /api/tasks/{task_id}/progress`, `GET /api/tasks`, `GET /api/results`, `GET /api/results/{task_id}/file`
+- 暴露 `DELETE /api/tasks/{task_id}`，用于删除非运行中的任务及其本地产物
 - 把客户端提交的 `mode=t2v` / `mode=i2v` 任务落盘到 SQLite
 - 使用单 worker 串行调用官方 `Wan2.2/generate.py`
 - 记录日志、结果文件路径和真实失败原因
@@ -278,6 +279,13 @@ curl --fail http://127.0.0.1:8000/api/tasks \
   - `progress_*` 主要用于长时间采样任务的观测
   - `download_url` 在 `status=succeeded` 且结果文件存在时可直接用于客户端下载视频
   - `update_time` 会在进度推进时刷新，可用于判断任务是否仍在前进
+- `DELETE /api/tasks/{task_id}`：
+  - 允许删除 `pending` / `succeeded` / `failed` 任务
+  - 当前会拒绝删除 `running` 任务
+  - 成功时会删除：
+    - SQLite 任务记录
+    - `logs/<task_id>.log`
+    - `outputs/<task_id>/`
 
 进度轮询建议：
 
@@ -297,6 +305,13 @@ curl --fail http://127.0.0.1:8000/api/tasks \
 ```bash
 curl --fail --output result.mp4 \
   http://127.0.0.1:8000/api/results/<task_id>/file
+```
+
+删除任务示例：
+
+```bash
+curl --fail -X DELETE \
+  http://127.0.0.1:8000/api/tasks/<task_id>
 ```
 
 ## 日志目录说明

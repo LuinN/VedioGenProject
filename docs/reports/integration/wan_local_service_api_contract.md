@@ -19,6 +19,7 @@
 - 服务内部固定调用官方 `Wan2.2/generate.py --task ti2v-5B`
 - `mode=i2v` 时会额外带 `--image <input_image_path>`
 - 生成成功后支持通过 HTTP 下载 `mp4` 结果文件
+- 支持通过 `DELETE /api/tasks/{task_id}` 删除非运行中的任务和本地产物
 - 支持通过轻量进度接口查询实时阶段和采样步数
 
 ## Status Enum
@@ -104,6 +105,8 @@
 | `image_save_failed` | `500 Internal Server Error` | 服务端保存上传图片失败 |
 | `validation_error` | `422 Unprocessable Entity` | 请求体缺字段、字段类型错误、空 prompt |
 | `task_not_found` | `404 Not Found` | 查询了不存在的任务 ID |
+| `task_not_deletable` | `409 Conflict` | 当前任务状态不允许删除，现阶段主要是 `running` |
+| `task_delete_failed` | `500 Internal Server Error` | 删除任务本地文件或数据库记录时发生内部错误 |
 | `result_not_ready` | `409 Conflict` | 任务尚未成功完成，当前没有可下载结果 |
 | `result_file_missing` | `404 Not Found` | 任务已成功，但服务端结果文件不存在 |
 | `service_not_ready` | `503 Service Unavailable` | 服务上下文未完成初始化 |
@@ -256,6 +259,40 @@ Running example:
 }
 ```
 
+### `DELETE /api/tasks/{task_id}`
+
+用途：
+
+- 删除指定任务
+- 同时清理该任务的本地产物
+
+当前删除规则：
+
+- 允许删除：
+  - `pending`
+  - `succeeded`
+  - `failed`
+- 当前拒绝删除：
+  - `running`
+
+删除副作用：
+
+- 删除 SQLite 中的任务记录
+- 删除 `logs/<task_id>.log`
+- 删除 `outputs/<task_id>/`
+- 删除后：
+  - `GET /api/tasks/{task_id}` 返回 `task_not_found`
+  - 若该任务原本在 `GET /api/results` 中出现，会从结果列表中消失
+
+Success response:
+
+```json
+{
+  "task_id": "123e4567-e89b-12d3-a456-426614174000",
+  "deleted": true
+}
+```
+
 Succeeded example for `GET /api/tasks/{task_id}`:
 
 ```json
@@ -398,7 +435,7 @@ Success response:
 {
   "error": {
     "code": "unsupported_mode",
-    "message": "Unsupported mode 'i2v'. Only 't2v' is supported."
+    "message": "Unsupported mode 'bad-mode'. Supported modes: t2v, i2v."
   }
 }
 ```
@@ -432,6 +469,17 @@ Success response:
   "error": {
     "code": "task_not_found",
     "message": "Task 'not-found-task' was not found."
+  }
+}
+```
+
+`task_not_deletable`:
+
+```json
+{
+  "error": {
+    "code": "task_not_deletable",
+    "message": "Task '123e4567-e89b-12d3-a456-426614174000' is currently running and cannot be deleted."
   }
 }
 ```

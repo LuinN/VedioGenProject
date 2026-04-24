@@ -15,6 +15,8 @@ ERROR_STATUS_CODES = {
     "image_save_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "validation_error": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "task_not_found": status.HTTP_404_NOT_FOUND,
+    "task_not_deletable": status.HTTP_409_CONFLICT,
+    "task_delete_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "result_not_ready": status.HTTP_409_CONFLICT,
     "result_file_missing": status.HTTP_404_NOT_FOUND,
     "service_not_ready": status.HTTP_503_SERVICE_UNAVAILABLE,

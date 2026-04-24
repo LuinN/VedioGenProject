@@ -11,6 +11,8 @@
   - `GET /api/tasks/{task_id}/progress`
   - `GET /api/tasks`
   - `GET /api/results`
+  - `GET /api/results/{task_id}/file`
+  - `DELETE /api/tasks/{task_id}`
 
 Contract stability for Windows parallel development:
 
@@ -22,6 +24,7 @@ Contract stability for Windows parallel development:
   - `progress_total`
   - `progress_percent`
 - `GET /api/tasks/{task_id}/progress` now provides a lightweight progress protocol for high-frequency polling
+- `DELETE /api/tasks/{task_id}` now provides task deletion for `pending` / `succeeded` / `failed` tasks
 - restart recovery strings remain:
   - `service restarted before task execution`
   - `service restarted while task was running`

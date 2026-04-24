@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 from typing import Any, Iterator
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from .config import (
     Settings,
     SUPPORTED_INPUT_IMAGE_CONTENT_TYPES,
     SUPPORTED_INPUT_IMAGE_EXTENSIONS,
+    TASK_STATUS_RUNNING,
     load_settings,
 )
 from .db import init_db
@@ -39,6 +41,7 @@ from .schemas import (
     ResultListResponse,
     TaskCreateRequest,
     TaskCreateResponse,
+    TaskDeleteResponse,
     TaskDetailResponse,
     TaskListItemResponse,
     TaskListResponse,
@@ -293,6 +296,66 @@ def _task_output_dir(settings: Settings, task_id: str) -> Path:
     return settings.outputs_dir / task_id
 
 
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _delete_file_if_present(path: Path, *, allowed_root: Path) -> None:
+    resolved = path.resolve()
+    if not _is_within_root(resolved, allowed_root):
+        raise ApiError(
+            "task_delete_failed",
+            f"Refusing to delete file outside managed root: {resolved}",
+        )
+    if not resolved.exists():
+        return
+    if resolved.is_dir():
+        raise ApiError(
+            "task_delete_failed",
+            f"Expected file path but found directory: {resolved}",
+        )
+    try:
+        resolved.unlink()
+    except OSError as exc:
+        raise ApiError(
+            "task_delete_failed",
+            f"Failed to delete file '{resolved}': {exc}",
+        ) from exc
+
+
+def _delete_directory_if_present(path: Path, *, allowed_root: Path) -> None:
+    resolved = path.resolve()
+    if not _is_within_root(resolved, allowed_root):
+        raise ApiError(
+            "task_delete_failed",
+            f"Refusing to delete directory outside managed root: {resolved}",
+        )
+    if not resolved.exists():
+        return
+    if not resolved.is_dir():
+        raise ApiError(
+            "task_delete_failed",
+            f"Expected directory path but found file: {resolved}",
+        )
+    try:
+        shutil.rmtree(resolved)
+    except OSError as exc:
+        raise ApiError(
+            "task_delete_failed",
+            f"Failed to delete directory '{resolved}': {exc}",
+        ) from exc
+
+
+def _delete_task_artifacts(settings: Settings, task: TaskRecord) -> None:
+    output_dir = _task_output_dir(settings, task.task_id)
+    _delete_directory_if_present(output_dir, allowed_root=settings.outputs_dir)
+    _delete_file_if_present(Path(task.log_path), allowed_root=settings.logs_dir)
+
+
 async def _save_input_image(
     settings: Settings,
     task_id: str,
@@ -512,6 +575,37 @@ async def get_task_progress(request: Request, task_id: str) -> TaskProgressRespo
         raise ApiError("task_not_found", f"Task '{task_id}' was not found.")
     task = _reconcile_task(context, task)
     return _task_to_progress(request, task, context.settings)
+
+
+@app.delete(
+    "/api/tasks/{task_id}",
+    response_model=TaskDeleteResponse,
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+async def delete_task(request: Request, task_id: str) -> TaskDeleteResponse:
+    context = _get_context(request)
+    task = context.repository.get_task(task_id)
+    if task is None:
+        raise ApiError("task_not_found", f"Task '{task_id}' was not found.")
+    task = _reconcile_task(context, task)
+    if task.status == TASK_STATUS_RUNNING:
+        raise ApiError(
+            "task_not_deletable",
+            f"Task '{task_id}' is currently running and cannot be deleted.",
+        )
+    _delete_task_artifacts(context.settings, task)
+    deleted = context.repository.delete_task(task_id)
+    if not deleted:
+        raise ApiError(
+            "task_delete_failed",
+            f"Task '{task_id}' could not be deleted from the repository.",
+        )
+    return TaskDeleteResponse(task_id=task_id, deleted=True)
 
 
 @app.get(

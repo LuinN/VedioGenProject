@@ -133,6 +133,15 @@ class TaskRepository:
             ).fetchone()
         return _row_to_task(row) if row is not None else None
 
+    def delete_task(self, task_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM tasks WHERE task_id = ?",
+                (task_id,),
+            )
+            connection.commit()
+        return cursor.rowcount > 0
+
     def list_tasks(self, limit: int) -> list[TaskRecord]:
         return self._list(
             """

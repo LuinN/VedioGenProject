@@ -129,3 +129,18 @@ def test_create_task_persists_input_image_path(
     assert stored is not None
     assert stored.mode == "i2v"
     assert stored.input_image_path == str(input_image_path.resolve())
+
+
+def test_delete_task_removes_row(repository, service_env: dict[str, Path]) -> None:
+    task = repository.create_task(
+        task_id="task-delete",
+        mode="t2v",
+        prompt="delete prompt",
+        size="1280*704",
+        log_path=str(service_env["logs_dir"] / "task-delete.log"),
+    )
+
+    deleted = repository.delete_task(task.task_id)
+
+    assert deleted is True
+    assert repository.get_task(task.task_id) is None

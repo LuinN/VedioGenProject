@@ -88,3 +88,27 @@ def test_task_runner_marks_failure(repository, service_env: dict[str, Path]) -> 
     assert stored.status == "failed"
     assert stored.output_path is None
     assert stored.error_message == "simulated wan failure"
+
+
+def test_task_runner_skips_deleted_task(repository, service_env: dict[str, Path]) -> None:
+    task = repository.create_task(
+        task_id="task-deleted-before-run",
+        mode="t2v",
+        prompt="delete before run",
+        size="1280*704",
+        log_path=str(service_env["logs_dir"] / "task-deleted-before-run.log"),
+    )
+    output_path = service_env["outputs_dir"] / task.task_id / "result.mp4"
+    runner = TaskRunner(repository, SuccessfulWanRunner(output_path))
+    repository.delete_task(task.task_id)
+
+    async def exercise() -> None:
+        await runner.start()
+        await runner.enqueue(task.task_id)
+        await asyncio.wait_for(runner.join(), timeout=2)
+        await runner.stop()
+
+    asyncio.run(exercise())
+
+    assert repository.get_task(task.task_id) is None
+    assert not output_path.exists()

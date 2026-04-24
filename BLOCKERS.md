@@ -2,30 +2,51 @@
 
 ## 当前真实阻塞
 
-### 新增：任务删除当前是 Windows 客户端本地删除，不是服务端删除
+### 新增：删除任务协议已完成，但当前不支持删除 `running` 任务
 
-当前真实协议状态：
+当前状态：
 
-- 服务端现有协议没有 `DELETE /api/tasks/{task_id}`
-- 本轮按 Windows 客户端职责边界没有修改服务端
+- 服务端已支持 `DELETE /api/tasks/{task_id}`
+- 当前允许删除：
+  - `pending`
+  - `succeeded`
+  - `failed`
+- 当前拒绝删除：
+  - `running`
 
-客户端当前行为：
+原因：
 
-- Tasks 区删除任务会：
-  - 从客户端任务列表移除该 task
-  - 清理本地任务 metadata、输入图缓存、缩略图和预览缓存
-  - 写入 `QStandardPaths::AppDataLocation/deleted_tasks.json`
-  - 后续 `/api/tasks` 和 `/api/results` 再返回同一 `task_id` 时继续隐藏
-- Tasks 区删除任务不会：
-  - 取消服务端正在运行的推理
-  - 删除服务端任务历史或输出文件
-  - 删除 Videos 页面里的本地 mp4
-- 本地 mp4 只能在 Videos 弹窗中通过 `Delete Selected` 删除
+- 当前仍是单 worker + 单推理子进程模型
+- 服务端尚未实现“中断正在运行的 Wan2.2 generate.py 并安全回收资源”的取消机制
+- 因此这轮删除功能只覆盖“非运行中任务删除”
 
 影响：
 
-- 已满足当前“客户端不删视频、视频只在 Videos 页面删除”的边界
-- 如果后续需要真正取消运行中任务或清理服务端任务历史，需要服务端新增明确的删除/取消 API
+- Windows 客户端可以先接入历史任务、失败任务和待执行任务的删除
+- 如果后续确实需要“删除时连带取消当前生成”，需要单独补任务取消协议和 runner/subprocess 终止逻辑
+
+### 新增：客户端已实现本地任务删除，但还没切到新的服务端删除接口
+
+当前状态：
+
+- Windows 客户端当前的 Tasks 删除仍是本地语义：
+  - 从 UI 中移除任务
+  - 清理本地任务 metadata、输入图缓存、缩略图和预览缓存
+  - 写入 `QStandardPaths::AppDataLocation/deleted_tasks.json`
+  - `/api/tasks` 与 `/api/results` 再返回同一 `task_id` 时继续隐藏
+- 本地 Tasks 删除不会：
+  - 调用 `DELETE /api/tasks/{task_id}`
+  - 删除服务端任务历史或输出目录
+  - 删除 Videos 页面中的本地 mp4
+- Videos 页面里的本地 mp4 仍然只在 `Delete Selected` 时删除
+
+影响：
+
+- 当前仓库里已经同时存在：
+  - 服务端真实删除协议
+  - 客户端本地隐藏式删除
+- 两边语义还没有接到一起
+- 如果需要真正清理服务端任务历史，需要 Windows 客户端补接 `DELETE /api/tasks/{task_id}`
 
 ### 新增：Windows 客户端已实现 multipart i2v，但当前运行中的服务端进程仍按旧 JSON-only 协议响应
 

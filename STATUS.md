@@ -11,9 +11,10 @@
 
 ### WSL 服务端
 
-- FastAPI 服务入口与 7 个接口
+- FastAPI 服务入口与 8 个接口
 - FastAPI 轻量进度接口 `GET /api/tasks/{task_id}/progress`
 - FastAPI 结果文件下载接口 `GET /api/results/{task_id}/file`
+- FastAPI 删除任务接口 `DELETE /api/tasks/{task_id}`
 - `POST /api/tasks` 现已同时支持：
   - `application/json` 的 `t2v`
   - `multipart/form-data` 的 `t2v` / `i2v`
@@ -34,6 +35,10 @@
 - 已为 `i2v` 任务增加输入图片持久化字段：
   - `input_image_path`
   - `input_image_exists`
+- 已支持删除非运行中的任务及其产物：
+  - SQLite 任务记录
+  - `logs/<task_id>.log`
+  - `outputs/<task_id>/`
 - 默认模型目录在 README / `.env.example` / `config.py` / 启动脚本之间完成统一
 - `setup_wan22.sh` 已补齐当前真实验证过的缺失运行时依赖：
   - `einops`
@@ -136,12 +141,35 @@
 
 2026-04-25：
 
+- WSL 服务端已补充删除任务协议：
+  - 新增 `DELETE /api/tasks/{task_id}`
+  - 当前允许删除：
+    - `pending`
+    - `succeeded`
+    - `failed`
+  - 当前拒绝删除：
+    - `running`
+  - 删除成功时会同步清理：
+    - SQLite 任务记录
+    - `logs/<task_id>.log`
+    - `outputs/<task_id>/`
+  - 服务端测试已覆盖：
+    - 成功删除 `succeeded` 任务并移除结果列表项
+    - 成功删除 `pending` 任务
+    - `running` 任务返回 `task_not_deletable`
+    - 缺失任务返回 `task_not_found`
+    - queue 中残留的已删除 task_id 会被 worker 安全跳过
+  - 当前服务端测试已提升到：
+    - `PYTHONPATH=. .venv/bin/python -m pytest -q tests`
+    - `37 passed`
+  - 当前删除功能以 ASGI/pytest 自测为主，本轮没有单独做真实后台 HTTP 手工复验
+
 - Windows Qt 客户端新增任务删除与视频删除边界：
   - Tasks 区新增 `Delete`，支持删除选中任务的客户端本地任务数据
   - 已删除任务写入 `deleted_tasks.json`，刷新服务端任务/结果列表时继续隐藏
   - 删除任务不删除用户下载视频；如本地任务缓存目录内存在 Videos 索引指向的 mp4，会保留该文件
   - Videos 弹窗新增 `Delete Selected`，只有这里会删除本地 mp4 并更新 `downloaded_videos.json`
-  - 服务端当前没有 `DELETE /api/tasks`，因此本轮任务删除不取消服务端推理，也不删除服务端历史记录
+  - 该轮客户端删除实现发生在服务端删除接口合入之前，所以当前客户端仍是“本地隐藏/清缓存”语义，尚未切到新的 `DELETE /api/tasks/{task_id}`
 - Windows 原生客户端构建与回归验证：
   - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
   - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`

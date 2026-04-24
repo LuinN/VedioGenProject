@@ -410,6 +410,124 @@ async def test_task_progress_endpoint_returns_persisted_progress(
 
 
 @pytest.mark.anyio
+async def test_delete_succeeded_task_removes_record_and_artifacts(
+    service_env: dict[str, Path],
+) -> None:
+    task_id = "task-delete-succeeded"
+    output_dir = service_env["outputs_dir"] / task_id
+    output_path = output_dir / "result.mp4"
+    input_image_path = output_dir / "input_image.png"
+    log_path = service_env["logs_dir"] / f"{task_id}.log"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(b"video-bytes")
+    input_image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-png")
+    log_path.write_text("task log", encoding="utf-8")
+
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            repository = app.state.service_context.repository
+            task = repository.create_task(
+                task_id=task_id,
+                mode="i2v",
+                prompt="delete me",
+                size="1280*704",
+                log_path=str(log_path.resolve()),
+                input_image_path=str(input_image_path.resolve()),
+            )
+            repository.mark_task_succeeded(task.task_id, str(output_path.resolve()))
+
+            delete_response = await client.delete(f"/api/tasks/{task.task_id}")
+            results_response = await client.get("/api/results")
+
+            assert repository.get_task(task.task_id) is None
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"task_id": task_id, "deleted": True}
+    assert not output_dir.exists()
+    assert not log_path.exists()
+    assert results_response.status_code == 200
+    assert results_response.json()["total"] == 0
+
+
+@pytest.mark.anyio
+async def test_delete_pending_task_succeeds_even_when_artifacts_do_not_exist(
+    service_env: dict[str, Path],
+) -> None:
+    task_id = "task-delete-pending"
+    log_path = service_env["logs_dir"] / f"{task_id}.log"
+
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            repository = app.state.service_context.repository
+            task = repository.create_task(
+                task_id=task_id,
+                mode="t2v",
+                prompt="pending delete",
+                size="1280*704",
+                log_path=str(log_path.resolve()),
+            )
+
+            delete_response = await client.delete(f"/api/tasks/{task.task_id}")
+
+            assert repository.get_task(task.task_id) is None
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"task_id": task_id, "deleted": True}
+
+
+@pytest.mark.anyio
+async def test_delete_running_task_is_rejected(service_env: dict[str, Path]) -> None:
+    task_id = "task-delete-running"
+    log_path = service_env["logs_dir"] / f"{task_id}.log"
+    log_path.write_text("running log", encoding="utf-8")
+
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            repository = app.state.service_context.repository
+            task = repository.create_task(
+                task_id=task_id,
+                mode="t2v",
+                prompt="running delete",
+                size="1280*704",
+                log_path=str(log_path.resolve()),
+            )
+            repository.mark_task_running(task.task_id)
+
+            delete_response = await client.delete(f"/api/tasks/{task.task_id}")
+
+            assert repository.get_task(task.task_id) is not None
+
+    assert delete_response.status_code == 409
+    payload = delete_response.json()
+    assert payload["error"]["code"] == "task_not_deletable"
+    assert log_path.exists()
+
+
+@pytest.mark.anyio
+async def test_delete_missing_task_returns_not_found(
+    service_env: dict[str, Path],
+) -> None:
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            delete_response = await client.delete("/api/tasks/missing-task")
+
+    assert delete_response.status_code == 404
+    assert delete_response.json()["error"]["code"] == "task_not_found"
+
+
+@pytest.mark.anyio
 async def test_startup_and_results_reconcile_running_task_with_output(
     repository,
     service_env: dict[str, Path],
