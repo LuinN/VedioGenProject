@@ -275,10 +275,15 @@ FastAPI 自动文档只作为机器可读补充，不替代主协议文档。
 
 当前还已通过真实任务确认：
 
-- 官方 TI2V-5B 主路径会进入 `wan/modules/model.py -> flash_attention()`
-- 在没有 `flash_attn` 时，`wan/modules/attention.py` 会触发 `assert FLASH_ATTN_2_AVAILABLE`
+- 上游官方 TI2V-5B 主路径原本会进入 `wan/modules/model.py -> flash_attention()`
+- 上游原始 `wan/modules/attention.py` 在没有 `flash_attn` 时会触发 `assert FLASH_ATTN_2_AVAILABLE`
+- 当前 workspace 已通过本地 patch 给 `flash_attention()` 补上 SDPA fallback
 
-因此对于当前官方 TI2V-5B 路径，`flash_attn` 应视为硬依赖。
+因此对于当前仓库的默认运行路径：
+
+- `flash_attn` 不再是必装依赖
+- `setup_wan22.sh` 默认不会再尝试本地编译 `flash_attn`
+- 默认交付路径就是当前已验证通过的 SDPA fallback
 
 ## 常见问题排查
 
@@ -313,57 +318,24 @@ FastAPI 自动文档只作为机器可读补充，不替代主协议文档。
 - 说明：当前上游主 `requirements.txt` 未覆盖全部运行时依赖，但官方入口模块链路会导入它们
 - 处理：重跑 `bash scripts/setup_wan22.sh`；当前脚本会额外安装 `einops`、`decord`、`librosa` 和 `peft`
 
-7. `flash_attn` 安装失败，提示 `CUDA_HOME environment variable is not set` 或 `nvcc was not found`
+7. 默认安装链现在为什么不再追 `nvcc` / `flash_attn`
 
-- 说明：当前环境缺少 CUDA toolkit 编译链，无法在本机编译 `flash_attn`
-- 处理：优先安装和当前 `torch 2.11.0+cu130` 更贴近的 `cuda-toolkit-13-0`，然后设置 `CUDA_HOME` 后重跑 `bash scripts/setup_wan22.sh`
-- 当前脚本已内置：
-  - `nvcc` 缺失时自动尝试 `sudo apt-get install -y cuda-toolkit-13-0`
-  - `.venv` 自动创建和激活
-  - `setuptools<82` 固定，用于避免 `torch 2.11.0 requires setuptools<82` 冲突
-  - `packaging`、`psutil`、`ninja` 预装
-  - `flash-attn==2.8.3 --no-build-isolation` 固定安装
-- 因此正常情况下不需要手动逐条输入 `python -m pip install ...`
-- 推荐命令：
+- 说明：当前仓库已经验证过 SDPA fallback 能真实出片，因此默认路径不再需要本地编译 `flash_attn`
+- 当前 `setup_wan22.sh` 的默认行为：
+  - `WAN_ENABLE_FLASH_ATTN_BUILD=0`
+  - 不自动安装 CUDA toolkit
+  - 不自动安装 `flash_attn`
+- 正常情况下只需要：
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y cuda-toolkit-13-0
-export CUDA_HOME=/usr/local/cuda-13.0
-export PATH="${CUDA_HOME}/bin:${PATH}"
 bash scripts/setup_wan22.sh
 ```
 
-8. `flash_attn` 一进入本地编译阶段，Codex 中断或整个 WSL 会话像是“崩掉了”
-
-- 说明：这不是前端假象。当前机器的 `/var/log/kern.log` 已记录多次全局 OOM；被杀进程包括 `cicc`、`cc1plus`，严重时还会杀到用户会话里的 `systemd`
-- 结果：当前 shell、Codex 和相关终端会一起中断，看起来像“编译一开始 Codex 就退出”
-- 当前脚本已把 `WAN_FLASH_ATTN_MAX_JOBS` 默认降到 `1`，避免继续用 `4` 路并发把 WSL 打满
-- 当前脚本还会在正式编译前检查 `MemAvailable` / `SwapFree`，并提示 `dockerd` / `containerd` / `postgres` 等常驻进程
-- 当前已额外提供仓库内可续编模式：
-  - 持久源码树：`third_party/flash-attn-2.8.3-src`
-  - 当前保存进度：`22 / 73` 个 `.o`
-  - 可先查看当前快照：
+- 只有你明确想恢复那条可选高性能编译链时，才需要自己显式开启：
 
 ```bash
-bash scripts/build_flash_attn_resumable.sh status
+WAN_ENABLE_FLASH_ATTN_BUILD=1 bash scripts/setup_wan22.sh
 ```
-
-  - 直接续编：
-
-```bash
-WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/build_flash_attn_resumable.sh resume
-```
-
-  - `setup_wan22.sh` 现在也会改走同一份持久源码树，所以也可以直接继续总安装链：
-
-```bash
-WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/setup_wan22.sh
-```
-- 推荐先执行：
-  - 停掉 Docker 和其他不必要的常驻服务
-  - `WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/setup_wan22.sh`
-- 如果仍然 OOM，再临时提高 Windows `.wslconfig` 里的 `memory` / `swap`
 
 9. 当前 workspace 已补上 `flash_attention()` 的 SDPA fallback
 
@@ -412,7 +384,7 @@ export WAN_ENFORCE_RUNTIME_MEMORY_GUARD=1
   - 在真实 WSL 本机终端里优先用 `bash scripts/run_service.sh start`
   - 如果你的具体终端环境里后台模式仍不保活，就改用 `bash scripts/run_service.sh foreground`
 
-13. 如果你后续仍要把 `flash_attn` 编好，当前推荐的编译参数
+13. 历史保留：如果你后续仍坚持要把 `flash_attn` 编好
 
 - `WAN_FLASH_ATTN_MAX_JOBS=1`
 - `WAN_FLASH_ATTN_CUDA_ARCHS=80`
@@ -420,3 +392,4 @@ export WAN_ENFORCE_RUNTIME_MEMORY_GUARD=1
   - 当前目标 GPU 是 RTX 3090
   - 不再默认编译 `sm_90/sm_100/sm_120`
   - 能减少本地编译时间和 OOM 风险
+  - 但这条链路已不再是当前仓库的默认维护目标

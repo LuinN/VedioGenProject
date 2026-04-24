@@ -36,6 +36,7 @@ class EnvironmentReport:
     configured_python_resolved: str | None
     service_ready: bool
     inference_ready: bool
+    flash_attn_build_enabled: bool
     flash_attn_build_ready: bool
     checks: list[CheckResult]
 
@@ -46,6 +47,7 @@ class EnvironmentReport:
             "configured_python_resolved": self.configured_python_resolved,
             "service_ready": self.service_ready,
             "inference_ready": self.inference_ready,
+            "flash_attn_build_enabled": self.flash_attn_build_enabled,
             "flash_attn_build_ready": self.flash_attn_build_ready,
             "checks": [item.to_dict() for item in self.checks],
         }
@@ -240,6 +242,7 @@ def collect_environment_report() -> EnvironmentReport:
     configured_python = _resolve_service_python(service_root)
     configured_python_resolved = _resolve_command(configured_python)
     allow_sdpa_fallback = _env_bool("WAN_ALLOW_SDPA_FALLBACK", True)
+    flash_attn_build_enabled = _env_bool("WAN_ENABLE_FLASH_ATTN_BUILD", False)
 
     wan_repo_dir = _resolve_path(
         service_root,
@@ -335,7 +338,7 @@ def collect_environment_report() -> EnvironmentReport:
                 name="nvcc",
                 ok=False,
                 detail="nvcc not found on PATH",
-                required_for=("build",),
+                required_for=("build",) if flash_attn_build_enabled else (),
             )
         )
     else:
@@ -345,7 +348,7 @@ def collect_environment_report() -> EnvironmentReport:
                 name="nvcc",
                 ok=ok,
                 detail=detail.splitlines()[-1] if detail else nvcc_path,
-                required_for=("build",),
+                required_for=("build",) if flash_attn_build_enabled else (),
             )
         )
 
@@ -395,6 +398,7 @@ def collect_environment_report() -> EnvironmentReport:
         configured_python_resolved=configured_python_resolved,
         service_ready=service_ready,
         inference_ready=inference_ready,
+        flash_attn_build_enabled=flash_attn_build_enabled,
         flash_attn_build_ready=flash_attn_build_ready,
         checks=checks,
     )
@@ -412,6 +416,10 @@ def _format_text(report: EnvironmentReport) -> str:
         ),
         f"[summary] service_ready={'yes' if report.service_ready else 'no'}",
         f"[summary] inference_ready={'yes' if report.inference_ready else 'no'}",
+        (
+            "[summary] flash_attn_build_enabled="
+            f"{'yes' if report.flash_attn_build_enabled else 'no'}"
+        ),
         (
             "[summary] flash_attn_build_ready="
             f"{'yes' if report.flash_attn_build_ready else 'no'}"
@@ -440,7 +448,12 @@ def _format_text(report: EnvironmentReport) -> str:
             "[hint] flash_attn import is optional in the current SDPA fallback mode. "
             "Inference can run without it, but performance may be lower."
         )
-    if not report.flash_attn_build_ready:
+    if not report.flash_attn_build_enabled:
+        lines.append(
+            "[hint] flash_attn local build is disabled by default. Current setup "
+            "and runtime validation target the SDPA fallback path."
+        )
+    elif not report.flash_attn_build_ready:
         lines.append(
             "[hint] flash_attn build prerequisites are incomplete. Install the CUDA "
             "toolkit so `nvcc` is available before retrying setup."

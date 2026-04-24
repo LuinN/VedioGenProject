@@ -20,7 +20,6 @@ nvcc                                                 missing
 - 当前剩余阻塞不在“能不能跑”，而在：
   - Windows 客户端长任务轮询闭环
   - Windows 客户端最终联调
-  - `flash_attn` 高性能路径
 
 ### 1. WSL FastAPI 服务在 Windows 客户端轮询期间掉线，后台模式已补上但仍待真实联调复验
 
@@ -90,7 +89,7 @@ generate.py exit code: 0
 - 服务端 `run_sample_t2v.sh` 已把默认等待窗口拉长到 40 分钟，并会输出 `stage/progress`
 - 当前剩余问题主要落在 Windows 客户端轮询策略尚未按长任务重新做一次真实复验
 
-### 3. `flash_attn` 本地编译会触发 WSL 全局 OOM，并进一步打断 Codex / 用户会话
+### 3. 历史记录：`flash_attn` 本地编译曾触发 WSL 全局 OOM
 
 最新真实证据来自本机系统日志，而不是推测：
 
@@ -121,6 +120,7 @@ system.journal corrupted or uncleanly shut down, renaming and replacing
 - 这已经不是“还没装好 `nvcc` / `CUDA_HOME`”的旧问题
 - 真实根因是 `flash_attn` 本地编译进入 CUDA/C++ 阶段后并发过高，触发 WSL 全局 OOM
 - 一旦用户会话里的 `systemd` 被杀，当前 shell、Codex 进程和相关终端都会被一起打断，所以主观感受会像“Codex 自动退出、WSL 崩了”
+- 这条链路现已降级为历史记录，不再是当前默认交付路径
 
 已知放大因素：
 
@@ -132,15 +132,7 @@ system.journal corrupted or uncleanly shut down, renaming and replacing
   - `processors=12`
   但多路 `cicc` 仍可把 RAM 和 swap 全部耗尽
 
-最小修复路径：
-
-- 先停掉 Docker 和其他不必要的 WSL 常驻服务
-- 使用串行编译重跑：
-  - `cd code/server/wan_local_service`
-  - `WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/setup_wan22.sh`
-- 如果仍然 OOM，再临时提高 `.wslconfig` 的 `memory` / `swap`，或在更干净的 WSL 发行版中完成一次编译
-
-### 4. 更早一轮的 `nvcc` / `CUDA_HOME` 缺失错误已经不是最新主阻塞
+### 4. 历史记录：更早一轮的 `nvcc` / `CUDA_HOME` 缺失错误
 
 历史错误仍真实存在过：
 
@@ -151,7 +143,7 @@ flash_attn was requested, but nvcc was not found
 
 但根据 `apt` 历史记录，这个阶段已经在真实 WSL 上被推进到“可以真正启动本地编译”。
 
-当前应优先处理的不是继续追 `nvcc`，而是解决本地编译 OOM。
+当前应优先处理的已经不是继续追 `nvcc`，也不是继续做本地编译。
 
 当前缓解状态：
 
@@ -160,14 +152,13 @@ flash_attn was requested, but nvcc was not found
 - 当前这次真实编译也已转存到仓库内持久源码树 `code/server/wan_local_service/third_party/flash-attn-2.8.3-src`
 - 已记录下 `22 / 73` 个 `.o` 目标的当前快照，可以直接续编
 - 这可以减少再次把 WSL 打挂的概率，也避免每次都从 `pip` 的临时目录重新开始
-- 但在当前 workspace 里，`nvcc` 仍不在 PATH，`flash_attn` 也仍未装好，所以高性能路径还没有真正闭环
+- 但当前 workspace 已明确放弃把这条高性能编译链作为默认目标
 
-当前续编入口：
+当前续编入口仅保留作历史参考：
 
 - `cd code/server/wan_local_service`
 - `bash scripts/build_flash_attn_resumable.sh status`
 - `WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/build_flash_attn_resumable.sh resume`
-- 或者继续走总安装链：`WAN_FLASH_ATTN_MAX_JOBS=1 bash scripts/setup_wan22.sh`
 
 ### 5. 官方主 requirements 之外还需要额外运行时依赖
 

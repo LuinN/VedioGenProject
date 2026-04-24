@@ -82,4 +82,4 @@ generate.py exit code: 0
 - 当前 workspace 已经在真实 WSL 环境里跑出了视频文件
 - 默认 `run_sample_t2v.sh` 的 6 分钟等待窗口不足以覆盖当前 1280x704 样例的真实生成时长
 - 这次完整样例总耗时约 31 分钟，其中采样阶段约 16 分 36 秒
-- 后续若要提升速度，应继续完成 `flash_attn` 的高性能编译链
+- 当前默认交付路径已经固定为 SDPA fallback，不再把 `flash_attn` 编译链作为后续前置

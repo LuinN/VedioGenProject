@@ -72,4 +72,4 @@ bash code/server/wan_local_service/scripts/run_service.sh stop
   - 可复验的后台服务起停能力
 - 当前剩余阻塞已进一步收敛到：
   - Windows Qt 客户端对长任务轮询的真实闭环复验
-  - `flash_attn` 高性能路径仍未编完
+  - Windows Qt 客户端最终联调闭环

@@ -295,7 +295,7 @@ Real output status:
 - `/api/results` is still empty
 - the 2026-04-24 direct `generate.py` rerun also did not produce a video file
 
-## 10. `flash_attn` Hard-Dependency Conclusion
+## 10. Historical `flash_attn` Hard-Dependency Conclusion
 
 Current code and runtime evidence now agree that `flash_attn` is a hard dependency for the official TI2V-5B path:
 
@@ -308,6 +308,12 @@ Conclusion:
 
 - no `flash_attn` bypass should be attempted inside the official source tree for this MVP
 - the correct next move is system-level CUDA toolkit repair
+
+Status note on `2026-04-24`:
+
+- this section is now historical context
+- the current workspace later patched `flash_attention()` with an SDPA fallback and proved real video generation without compiling `flash_attn`
+- therefore this report should not be treated as the latest default service path
 
 ## 11. Background Service Script Verification
 
@@ -388,7 +394,7 @@ After `cuda-toolkit-13-0` was installed in the real WSL environment, the blocker
 
 This explains the observed symptom that Codex exited and the WSL session looked crashed: once user-session `systemd` was OOM-killed, the interactive session was torn down as collateral damage.
 
-## 12. Current Blockers
+## 12. Historical Blockers At That Stage
 
 - official TI2V-5B sampling now confirms `flash_attn` is required at runtime
 - local `flash_attn` compilation can now start in real WSL, but it still fails because the compile stage triggers global OOM

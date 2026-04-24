@@ -45,7 +45,6 @@
 - `nvcc` 当前仍不在 PATH
 - 当前工作区已经可以启动服务并跑通一次真实 `t2v` 生成
 - 当前未完成项主要剩在：
-  - `flash_attn` 高性能编译链
   - Windows 客户端长任务轮询闭环
   - Windows 客户端最终联调闭环
 
@@ -88,6 +87,9 @@
   - `run_sample_t2v.sh` 轮询时会打印 `stage` 和采样进度
   - `run_service.sh start` 现优先走 `setsid` 脱离当前会话
   - `run_service.sh stop` 在超时后会补一次强制停止，避免遗留僵尸 PID
+  - `setup_wan22.sh` 现已默认 `WAN_ENABLE_FLASH_ATTN_BUILD=0`
+  - 默认安装链不再尝试安装 CUDA toolkit，也不再尝试本地编译 `flash_attn`
+  - 当前服务端的默认可交付路径已经固定为 SDPA fallback，而不是高性能编译链
 - 当前会话已真实补过一轮后台服务复验：
   - `bash code/server/wan_local_service/scripts/run_service.sh start`
   - `bash code/server/wan_local_service/scripts/run_service.sh status`
@@ -107,7 +109,7 @@
 - 服务端当前也已接受这条 fallback 路径：
   - `WanRunner` 不再把缺少 `flash_attn` 视为默认硬阻塞
   - `check_env.sh` / `env_report.py` 在真实 WSL 环境里现已显示 `inference_ready=yes`
-  - 但 `flash_attn_build_ready` 仍然是 `no`
+  - `flash_attn` 本地编译链默认已关闭，不再作为当前主路径前置
 - 真实服务链已推进到 GPU 满载生成阶段：
   - 以 `bash code/server/wan_local_service/scripts/run_service.sh foreground` 托管服务
   - 以 `bash code/server/wan_local_service/scripts/run_sample_t2v.sh` 创建了真实任务 `57783f7a-5915-49f2-b105-8cd15dd26fbe`
@@ -129,9 +131,9 @@
   - 默认等待窗口已拉长
   - 当前脚本能直接打印阶段和采样进度
   - 这次 1280x704 样例完整耗时约 31 分钟，其中采样阶段约 16 分 36 秒
-- `flash_attn` 编译链也继续收敛：
-  - `build_flash_attn_resumable.sh` 与 `setup_wan22.sh` 现已默认 `WAN_FLASH_ATTN_CUDA_ARCHS=80`
-  - 当前 RTX 3090 路径不再默认编译 `sm_90/sm_100/sm_120`
+- `flash_attn` 编译链现已降级为历史保留能力：
+  - `build_flash_attn_resumable.sh` 仍保留在仓库中
+  - 但默认服务端安装与运行路径不再依赖它
 
 - `flash_attn` 本地编译链已改成仓库内可续编模式：
   - 当前这次真实编译已从 `pip` 的临时目录转存到 `code/server/wan_local_service/third_party/flash-attn-2.8.3-src`

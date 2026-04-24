@@ -34,7 +34,8 @@ WAN_REPO_DIR="$(resolve_service_path "${WAN_REPO_DIR:-third_party/Wan2.2}")"
 WAN_MODEL_DIR="$(resolve_service_path "${WAN_MODEL_DIR:-third_party/Wan2.2-TI2V-5B}")"
 WAN_AUTO_DOWNLOAD_MODEL="${WAN_AUTO_DOWNLOAD_MODEL:-0}"
 WAN_MODEL_DOWNLOAD_PROVIDER="${WAN_MODEL_DOWNLOAD_PROVIDER:-huggingface}"
-WAN_AUTO_INSTALL_CUDA_TOOLKIT="${WAN_AUTO_INSTALL_CUDA_TOOLKIT:-1}"
+WAN_ENABLE_FLASH_ATTN_BUILD="${WAN_ENABLE_FLASH_ATTN_BUILD:-0}"
+WAN_AUTO_INSTALL_CUDA_TOOLKIT="${WAN_AUTO_INSTALL_CUDA_TOOLKIT:-0}"
 WAN_CUDA_TOOLKIT_PACKAGE="${WAN_CUDA_TOOLKIT_PACKAGE:-cuda-toolkit-13-0}"
 WAN_SETUPTOOLS_SPEC="${WAN_SETUPTOOLS_SPEC:-setuptools<82}"
 WAN_FLASH_ATTN_VERSION="${WAN_FLASH_ATTN_VERSION:-2.8.3}"
@@ -166,6 +167,7 @@ echo "[env] Service root: ${SERVICE_ROOT}"
 echo "[env] Bootstrap Python: ${PYTHON_BOOTSTRAP_BIN}"
 echo "[env] Wan repo dir: ${WAN_REPO_DIR}"
 echo "[env] Wan model dir: ${WAN_MODEL_DIR}"
+echo "[env] FlashAttention build enabled: ${WAN_ENABLE_FLASH_ATTN_BUILD}"
 echo "[env] Auto-install CUDA toolkit: ${WAN_AUTO_INSTALL_CUDA_TOOLKIT}"
 echo "[env] Setuptools constraint: ${WAN_SETUPTOOLS_SPEC}"
 echo "[env] FlashAttention package: ${WAN_FLASH_ATTN_SPEC}"
@@ -206,31 +208,39 @@ fi
 
 echo "[check] CUDA toolkit access"
 echo "[info] CUDA_HOME=${CUDA_HOME:-}"
-if command -v nvcc >/dev/null 2>&1; then
-  nvcc -V
-else
-  echo "[warn] nvcc is not installed or not on PATH."
-  if [[ "${WAN_AUTO_INSTALL_CUDA_TOOLKIT}" == "1" ]]; then
-    command -v sudo >/dev/null 2>&1 || {
-      echo "[error] sudo is required to auto-install ${WAN_CUDA_TOOLKIT_PACKAGE}, but sudo was not found." >&2
-      exit 1
-    }
-    echo "[setup] Installing ${WAN_CUDA_TOOLKIT_PACKAGE} because nvcc is missing"
-    sudo apt-get update
-    sudo apt-get install -y "${WAN_CUDA_TOOLKIT_PACKAGE}"
-    bootstrap_cuda_env
+if [[ "${WAN_ENABLE_FLASH_ATTN_BUILD}" == "1" ]]; then
+  if command -v nvcc >/dev/null 2>&1; then
+    nvcc -V
+  else
+    echo "[warn] nvcc is not installed or not on PATH."
+    if [[ "${WAN_AUTO_INSTALL_CUDA_TOOLKIT}" == "1" ]]; then
+      command -v sudo >/dev/null 2>&1 || {
+        echo "[error] sudo is required to auto-install ${WAN_CUDA_TOOLKIT_PACKAGE}, but sudo was not found." >&2
+        exit 1
+      }
+      echo "[setup] Installing ${WAN_CUDA_TOOLKIT_PACKAGE} because nvcc is missing"
+      sudo apt-get update
+      sudo apt-get install -y "${WAN_CUDA_TOOLKIT_PACKAGE}"
+      bootstrap_cuda_env
+    fi
   fi
-fi
 
-if command -v nvcc >/dev/null 2>&1; then
-  nvcc -V
+  if command -v nvcc >/dev/null 2>&1; then
+    nvcc -V
+  else
+    echo "[hint] Recommended fix path for the optional flash_attn build:"
+    echo "  sudo apt-get update"
+    echo "  sudo apt-get install -y ${WAN_CUDA_TOOLKIT_PACKAGE}"
+    echo "  export CUDA_HOME=/usr/local/cuda-13.0"
+    echo "  export PATH=\"\${CUDA_HOME}/bin:\${PATH}\""
+    exit 1
+  fi
 else
-  echo "[hint] Recommended fix path for the current torch cu130 environment:"
-  echo "  sudo apt-get update"
-  echo "  sudo apt-get install -y ${WAN_CUDA_TOOLKIT_PACKAGE}"
-  echo "  export CUDA_HOME=/usr/local/cuda-13.0"
-  echo "  export PATH=\"\${CUDA_HOME}/bin:\${PATH}\""
-  exit 1
+  if command -v nvcc >/dev/null 2>&1; then
+    nvcc -V
+  else
+    echo "[info] Skipping nvcc / CUDA toolkit setup because WAN_ENABLE_FLASH_ATTN_BUILD=0."
+  fi
 fi
 
 if [[ ! -d "${SERVICE_ROOT}/.venv" ]]; then
@@ -246,9 +256,6 @@ python -m pip install --upgrade pip wheel
 
 echo "[setup] Pinning setuptools for torch 2.11 compatibility"
 python -m pip install --force-reinstall "${WAN_SETUPTOOLS_SPEC}"
-
-echo "[setup] Installing Python build dependencies required by flash-attn"
-python -m pip install packaging psutil ninja
 
 echo "[setup] Installing service dependencies"
 python -m pip install -r "${SERVICE_ROOT}/requirements-service.txt"
@@ -275,30 +282,37 @@ python -m pip install einops decord librosa peft
 echo "[setup] Re-applying setuptools constraint after upstream installs"
 python -m pip install --force-reinstall "${WAN_SETUPTOOLS_SPEC}"
 
-echo "[setup] Installing ${WAN_FLASH_ATTN_SPEC} without build isolation"
-export MAX_JOBS="${MAX_JOBS:-${WAN_FLASH_ATTN_MAX_JOBS}}"
-export NINJA_NUM_PROCESSES="${NINJA_NUM_PROCESSES:-${MAX_JOBS}}"
-export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-${MAX_JOBS}}"
-echo "[env] MAX_JOBS=${MAX_JOBS}"
-echo "[env] NINJA_NUM_PROCESSES=${NINJA_NUM_PROCESSES}"
-echo "[env] CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL}"
-if grep -qi microsoft /proc/version 2>/dev/null && [[ "${MAX_JOBS}" != "1" ]]; then
-  echo "[warn] WSL local flash_attn builds have previously hit global OOM with higher parallelism."
-  echo "[warn] Keep MAX_JOBS=1 unless you have verified enough free memory and swap headroom."
-fi
-check_flash_attn_memory_headroom
-if ! \
-  WAN_FLASH_ATTN_VERSION="${WAN_FLASH_ATTN_VERSION}" \
-  WAN_FLASH_ATTN_MAX_JOBS="${WAN_FLASH_ATTN_MAX_JOBS}" \
-  WAN_FLASH_ATTN_CUDA_ARCHS="${WAN_FLASH_ATTN_CUDA_ARCHS}" \
-  WAN_FLASH_ATTN_MEMORY_GUARD="${WAN_FLASH_ATTN_MEMORY_GUARD}" \
-  WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB="${WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB}" \
-  WAN_FLASH_ATTN_MIN_SWAP_FREE_GB="${WAN_FLASH_ATTN_MIN_SWAP_FREE_GB}" \
-  WAN_PYTHON_SETUP_BIN="${PYTHON_BOOTSTRAP_BIN}" \
-  bash "${SERVICE_ROOT}/scripts/build_flash_attn_resumable.sh" resume; then
-  echo "[error] flash_attn installation failed after installing the other Wan2.2 requirements." >&2
-  echo "[error] This is a real blocker. Check the pip output above for the exact failure." >&2
-  exit 1
+if [[ "${WAN_ENABLE_FLASH_ATTN_BUILD}" == "1" ]]; then
+  echo "[setup] Installing Python build dependencies required by flash-attn"
+  python -m pip install packaging psutil ninja
+
+  echo "[setup] Installing ${WAN_FLASH_ATTN_SPEC} without build isolation"
+  export MAX_JOBS="${MAX_JOBS:-${WAN_FLASH_ATTN_MAX_JOBS}}"
+  export NINJA_NUM_PROCESSES="${NINJA_NUM_PROCESSES:-${MAX_JOBS}}"
+  export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-${MAX_JOBS}}"
+  echo "[env] MAX_JOBS=${MAX_JOBS}"
+  echo "[env] NINJA_NUM_PROCESSES=${NINJA_NUM_PROCESSES}"
+  echo "[env] CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL}"
+  if grep -qi microsoft /proc/version 2>/dev/null && [[ "${MAX_JOBS}" != "1" ]]; then
+    echo "[warn] WSL local flash_attn builds have previously hit global OOM with higher parallelism."
+    echo "[warn] Keep MAX_JOBS=1 unless you have verified enough free memory and swap headroom."
+  fi
+  check_flash_attn_memory_headroom
+  if ! \
+    WAN_FLASH_ATTN_VERSION="${WAN_FLASH_ATTN_VERSION}" \
+    WAN_FLASH_ATTN_MAX_JOBS="${WAN_FLASH_ATTN_MAX_JOBS}" \
+    WAN_FLASH_ATTN_CUDA_ARCHS="${WAN_FLASH_ATTN_CUDA_ARCHS}" \
+    WAN_FLASH_ATTN_MEMORY_GUARD="${WAN_FLASH_ATTN_MEMORY_GUARD}" \
+    WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB="${WAN_FLASH_ATTN_MIN_MEM_AVAILABLE_GB}" \
+    WAN_FLASH_ATTN_MIN_SWAP_FREE_GB="${WAN_FLASH_ATTN_MIN_SWAP_FREE_GB}" \
+    WAN_PYTHON_SETUP_BIN="${PYTHON_BOOTSTRAP_BIN}" \
+    bash "${SERVICE_ROOT}/scripts/build_flash_attn_resumable.sh" resume; then
+    echo "[error] flash_attn installation failed after installing the other Wan2.2 requirements." >&2
+    echo "[error] This is a real blocker only when WAN_ENABLE_FLASH_ATTN_BUILD=1." >&2
+    exit 1
+  fi
+else
+  echo "[setup] Skipping flash_attn local build. The default runtime path uses the SDPA fallback patch."
 fi
 
 if [[ "${WAN_AUTO_DOWNLOAD_MODEL}" == "1" ]]; then
