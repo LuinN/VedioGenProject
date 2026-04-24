@@ -671,7 +671,8 @@ void MainWindow::connectSignals()
     connect(m_tasksList, &QListWidget::itemSelectionChanged, this, [this]() {
         updateOutputDirectoryField();
         if (m_deleteTaskButton != nullptr) {
-            m_deleteTaskButton->setEnabled(!selectedTaskId().isEmpty());
+            const QString selectedId = selectedTaskId();
+            m_deleteTaskButton->setEnabled(!selectedId.isEmpty() && !m_taskDeleteInFlightIds.contains(selectedId));
         }
     });
     connect(m_resultsTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::updateOutputDirectoryField);
@@ -693,6 +694,7 @@ void MainWindow::connectSignals()
     connect(&m_apiClient, &ApiClient::taskCreated, this, &MainWindow::onTaskCreated);
     connect(&m_apiClient, &ApiClient::taskFetched, this, &MainWindow::onTaskFetched);
     connect(&m_apiClient, &ApiClient::tasksFetched, this, &MainWindow::onTasksFetched);
+    connect(&m_apiClient, &ApiClient::taskDeleted, this, &MainWindow::onTaskDeleted);
     connect(&m_apiClient, &ApiClient::resultsFetched, this, &MainWindow::onResultsFetched);
     connect(&m_apiClient, &ApiClient::resultDownloaded, this, &MainWindow::onResultDownloaded);
     connect(&m_apiClient, &ApiClient::requestFailed, this, &MainWindow::onRequestFailed);
@@ -1123,15 +1125,23 @@ void MainWindow::deleteSelectedTask()
         showUserNotice(message);
         return;
     }
+    if (m_taskDeleteInFlightIds.contains(taskId)) {
+        const QString message = QStringLiteral("Task deletion is already in progress: %1").arg(taskId);
+        appendDiagnostic(message);
+        showUserNotice(message);
+        return;
+    }
 
     const TaskModels::TaskDetail task = m_tasks.value(taskId);
     const QString prompt = task.prompt.simplified();
     const QString confirmText = QStringLiteral(
-        "Delete this task from the client?\n\n"
+        "Delete this task from the service and client?\n\n"
         "Task ID: %1\n"
         "%2\n\n"
-        "This removes local task metadata, input image cache, preview video cache, and thumbnails.\n"
-        "Downloaded videos are kept and can only be deleted from Videos.")
+        "The service will delete the task record, log, and generated output artifacts.\n"
+        "The client will remove local task metadata, input image cache, preview video cache, and thumbnails.\n\n"
+        "Downloaded videos are kept and can only be deleted from Videos.\n"
+        "Running tasks cannot be deleted yet.")
                                     .arg(taskId, prompt.isEmpty() ? QString() : QStringLiteral("Prompt: %1").arg(prompt.left(160)));
 
     const QMessageBox::StandardButton answer = QMessageBox::question(
@@ -1144,25 +1154,13 @@ void MainWindow::deleteSelectedTask()
         return;
     }
 
-    QString error;
-    if (!deleteTaskLocalData(taskId, &error)) {
-        const QString message = QStringLiteral("Failed to delete task data: %1").arg(error);
-        appendDiagnostic(message);
-        appendChatMessage(QStringLiteral("System"), message);
-        showUserNotice(message);
-        return;
+    m_taskDeleteInFlightIds.insert(taskId);
+    if (m_deleteTaskButton != nullptr) {
+        m_deleteTaskButton->setEnabled(false);
     }
-
-    m_deletedTaskIds.insert(taskId);
-    saveDeletedTasks();
-    refreshTasksTable();
-    refreshResultsTable();
-    updateOutputDirectoryField();
-
-    const QString message = QStringLiteral("Deleted task %1. Downloaded videos were kept.").arg(taskId);
-    appendDiagnostic(message);
-    appendChatMessage(QStringLiteral("System"), message);
-    showUserNotice(QStringLiteral("Task deleted."));
+    appendDiagnostic(QStringLiteral("Deleting task via service API: %1").arg(taskId));
+    showUserNotice(QStringLiteral("Deleting task: %1").arg(taskId));
+    m_apiClient.deleteTask(taskId);
 }
 
 void MainWindow::downloadSelectedResult()
@@ -1466,6 +1464,44 @@ void MainWindow::onTasksFetched(const TaskModels::TaskListResponse &tasks)
                          .arg(tasks.items.size() - visibleCount));
 }
 
+void MainWindow::onTaskDeleted(const TaskModels::TaskDeleteResponse &task)
+{
+    const QString taskId = task.taskId.trimmed();
+    m_taskDeleteInFlightIds.remove(taskId);
+
+    if (taskId.isEmpty() || !task.deleted) {
+        const QString message = QStringLiteral("The service returned an invalid task deletion response.");
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        refreshTasksTable();
+        return;
+    }
+
+    QString error;
+    if (!deleteTaskLocalData(taskId, &error)) {
+        const QString message = QStringLiteral("Service deleted task %1, but local cleanup failed: %2").arg(taskId, error);
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        refreshTasksTable();
+        return;
+    }
+
+    m_deletedTaskIds.insert(taskId);
+    saveDeletedTasks();
+    refreshTasksTable();
+    refreshResultsTable();
+    refreshVideosTable();
+    updateOutputDirectoryField();
+    m_apiClient.fetchResults(kListLimit);
+
+    const QString message = QStringLiteral("Deleted task %1 from service and client. Downloaded videos were kept.").arg(taskId);
+    appendDiagnostic(message);
+    appendChatMessage(QStringLiteral("System"), message);
+    showUserNotice(QStringLiteral("Task deleted."));
+}
+
 void MainWindow::onResultsFetched(const TaskModels::ResultListResponse &results)
 {
     m_results.clear();
@@ -1577,6 +1613,14 @@ void MainWindow::onRequestFailed(const RequestFailure &failure)
                 m_thumbnailFailedTaskIds.insert(taskId);
                 refreshTasksTable();
             }
+        }
+    } else if (failure.kind == RequestKind::DeleteTask) {
+        const QString taskId = failure.taskId.isEmpty()
+            ? failure.url.path().section(QLatin1Char('/'), -1)
+            : failure.taskId;
+        if (!taskId.isEmpty()) {
+            m_taskDeleteInFlightIds.remove(taskId);
+            refreshTasksTable();
         }
     }
 
@@ -1727,7 +1771,8 @@ void MainWindow::refreshTasksTable()
         }
     }
     if (m_deleteTaskButton != nullptr) {
-        m_deleteTaskButton->setEnabled(!selectedTaskId().isEmpty());
+        const QString selectedId = selectedTaskId();
+        m_deleteTaskButton->setEnabled(!selectedId.isEmpty() && !m_taskDeleteInFlightIds.contains(selectedId));
     }
 }
 
@@ -2933,6 +2978,8 @@ bool MainWindow::deleteTaskLocalData(const QString &taskId, QString *error)
     m_taskMetadata.remove(trimmedTaskId);
     m_activeTaskIds.remove(trimmedTaskId);
     m_inFlightTaskIds.remove(trimmedTaskId);
+    m_downloadInFlightTaskIds.remove(trimmedTaskId);
+    m_taskDeleteInFlightIds.remove(trimmedTaskId);
     m_previewDownloadInFlightTaskIds.remove(trimmedTaskId);
     m_thumbnailQueuedTaskIds.remove(trimmedTaskId);
     m_thumbnailInFlightTaskIds.remove(trimmedTaskId);

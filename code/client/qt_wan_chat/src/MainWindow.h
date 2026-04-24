@@ -95,6 +95,7 @@ private slots:
     void onTaskCreated(const TaskModels::TaskSummary &task);
     void onTaskFetched(const TaskModels::TaskDetail &task);
     void onTasksFetched(const TaskModels::TaskListResponse &tasks);
+    void onTaskDeleted(const TaskModels::TaskDeleteResponse &task);
     void onResultsFetched(const TaskModels::ResultListResponse &results);
     void onResultDownloaded(const ResultDownload &download);
     void onRequestFailed(const RequestFailure &failure);
@@ -202,6 +203,7 @@ private:
     QSet<QString> m_activeTaskIds;
     QSet<QString> m_inFlightTaskIds;
     QSet<QString> m_downloadInFlightTaskIds;
+    QSet<QString> m_taskDeleteInFlightIds;
     QSet<QString> m_previewDownloadInFlightTaskIds;
     QSet<QString> m_thumbnailQueuedTaskIds;
     QSet<QString> m_thumbnailInFlightTaskIds;

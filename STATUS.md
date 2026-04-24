@@ -75,6 +75,7 @@
   - `POST /api/tasks`
   - `GET /api/tasks/{task_id}`
   - `GET /api/tasks`
+  - `DELETE /api/tasks/{task_id}`
   - `GET /api/results`
 - 主窗口现已收敛为左侧 Tasks + 中间 Wan Chat 两栏：
   - 任务列表
@@ -108,9 +109,10 @@
   - 缺少本地 mp4 时会按需后台下载到任务缓存目录
   - 双击任务卡片中的结果截图可调用 Windows 默认播放器
   - 已修复旧缩略图生成链路可能复用同一帧画面的问题：现在每个任务使用独立解码器、旧缓存按版本失效并重建
-- 已支持客户端本地删除任务：
+- 已支持服务端联动删除任务：
   - 左侧 Tasks 顶部 `Delete` 按钮与键盘 `Delete` 可删除选中任务
-  - 删除任务会移除本地任务状态、结果映射、任务 metadata、输入图缓存、缩略图和预览缓存
+  - 客户端会先调用 `DELETE /api/tasks/{task_id}`
+  - 服务端返回 `{deleted: true}` 后，客户端再移除本地任务状态、结果映射、任务 metadata、输入图缓存、缩略图和预览缓存
   - 删除任务不会删除 Videos 页面中的本地 mp4，也不会移除 `downloaded_videos.json`
   - 已删除任务 ID 持久化到 `QStandardPaths::AppDataLocation/deleted_tasks.json`
   - 后续 `/api/tasks` 与 `/api/results` 拉回同一 task_id 时，客户端会继续隐藏该任务
@@ -164,12 +166,13 @@
     - `37 passed`
   - 当前删除功能以 ASGI/pytest 自测为主，本轮没有单独做真实后台 HTTP 手工复验
 
-- Windows Qt 客户端新增任务删除与视频删除边界：
-  - Tasks 区新增 `Delete`，支持删除选中任务的客户端本地任务数据
-  - 已删除任务写入 `deleted_tasks.json`，刷新服务端任务/结果列表时继续隐藏
-  - 删除任务不删除用户下载视频；如本地任务缓存目录内存在 Videos 索引指向的 mp4，会保留该文件
-  - Videos 弹窗新增 `Delete Selected`，只有这里会删除本地 mp4 并更新 `downloaded_videos.json`
-  - 该轮客户端删除实现发生在服务端删除接口合入之前，所以当前客户端仍是“本地隐藏/清缓存”语义，尚未切到新的 `DELETE /api/tasks/{task_id}`
+- Windows Qt 客户端已把 Tasks 删除切到服务端 `DELETE /api/tasks/{task_id}`：
+  - `ApiClient` 新增 `deleteTask(task_id)`
+  - 新增 `TaskDeleteResponse` 解析
+  - Tasks 区 `Delete` 现在先请求服务端删除，成功后才清理本地任务状态、metadata、输入图缓存、缩略图和预览缓存
+  - 删除任务仍不删除用户下载视频；如本地任务缓存目录内存在 Videos 索引指向的 mp4，会保留该文件
+  - Videos 弹窗 `Delete Selected` 继续作为唯一删除本地 mp4 和更新 `downloaded_videos.json` 的入口
+  - 当前运行中服务端探测结果仍返回 `HTTP 405 Method Not Allowed` / `allow: GET`，说明运行进程尚未加载新 DELETE 路由；本轮没有重启服务端
 - Windows 原生客户端构建与回归验证：
   - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
   - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`

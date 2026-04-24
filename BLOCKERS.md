@@ -25,28 +25,38 @@
 - Windows 客户端可以先接入历史任务、失败任务和待执行任务的删除
 - 如果后续确实需要“删除时连带取消当前生成”，需要单独补任务取消协议和 runner/subprocess 终止逻辑
 
-### 新增：客户端已实现本地任务删除，但还没切到新的服务端删除接口
+### 新增：Windows 客户端已切到服务端删除协议，但当前运行中的服务端进程仍未加载 DELETE 路由
 
 当前状态：
 
-- Windows 客户端当前的 Tasks 删除仍是本地语义：
-  - 从 UI 中移除任务
-  - 清理本地任务 metadata、输入图缓存、缩略图和预览缓存
-  - 写入 `QStandardPaths::AppDataLocation/deleted_tasks.json`
-  - `/api/tasks` 与 `/api/results` 再返回同一 `task_id` 时继续隐藏
-- 本地 Tasks 删除不会：
-  - 调用 `DELETE /api/tasks/{task_id}`
-  - 删除服务端任务历史或输出目录
-  - 删除 Videos 页面中的本地 mp4
-- Videos 页面里的本地 mp4 仍然只在 `Delete Selected` 时删除
+- Windows 客户端已新增：
+  - `ApiClient::deleteTask(task_id)`
+  - `DELETE /api/tasks/{task_id}` 请求路径
+  - `TaskDeleteResponse` 解析
+  - Tasks 删除成功后才清理本地任务数据
+  - Videos 页面仍单独负责删除本地 mp4
+
+真实运行中服务端探测结果：
+
+```text
+curl.exe -s -i -X DELETE http://127.0.0.1:8000/api/tasks/codex-missing-delete-probe
+
+HTTP/1.1 405 Method Not Allowed
+allow: GET
+{"detail":"Method Not Allowed"}
+```
+
+当前判断：
+
+- 仓库中的服务端代码和协议文档已经支持 `DELETE /api/tasks/{task_id}`
+- 当前正在运行的 FastAPI 进程仍是旧路由状态，只允许 `GET /api/tasks/{task_id}`
+- 本轮按要求没有启动、停止或重启服务端，因此不能把真实 UI 删除验收到成功
 
 影响：
 
-- 当前仓库里已经同时存在：
-  - 服务端真实删除协议
-  - 客户端本地隐藏式删除
-- 两边语义还没有接到一起
-- 如果需要真正清理服务端任务历史，需要 Windows 客户端补接 `DELETE /api/tasks/{task_id}`
+- 客户端代码路径已编译通过
+- 当前运行服务端上点击 Tasks 删除会得到 HTTP 405 或服务端错误提示
+- 真实删除成功需要服务端侧重启/更新运行进程后再复验
 
 ### 新增：Windows 客户端已实现 multipart i2v，但当前运行中的服务端进程仍按旧 JSON-only 协议响应
 

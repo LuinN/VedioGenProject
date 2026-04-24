@@ -61,6 +61,8 @@ QString requestKindName(RequestKind kind)
         return QStringLiteral("GET /api/tasks/{task_id}");
     case RequestKind::FetchTasks:
         return QStringLiteral("GET /api/tasks");
+    case RequestKind::DeleteTask:
+        return QStringLiteral("DELETE /api/tasks/{task_id}");
     case RequestKind::FetchResults:
         return QStringLiteral("GET /api/results");
     case RequestKind::DownloadResult:
@@ -166,6 +168,27 @@ void ApiClient::fetchTasks(int limit)
     sendGetRequest(RequestKind::FetchTasks, url);
 }
 
+void ApiClient::deleteTask(const QString &taskId)
+{
+    const QString trimmedTaskId = taskId.trimmed();
+    if (trimmedTaskId.isEmpty()) {
+        RequestFailure failure;
+        failure.kind = RequestKind::DeleteTask;
+        failure.stableCode = QStringLiteral("invalid_task_id");
+        failure.userMessage = QStringLiteral("Task id is empty.");
+        emit requestFailed(failure);
+        return;
+    }
+    if (!m_baseUrl.isValid()) {
+        emitInvalidBaseUrlFailure(RequestKind::DeleteTask, QStringLiteral("Service base URL is not configured."));
+        return;
+    }
+
+    QUrl url = m_baseUrl;
+    url.setPath(QStringLiteral("/api/tasks/%1").arg(trimmedTaskId));
+    sendDeleteRequest(RequestKind::DeleteTask, url, trimmedTaskId);
+}
+
 void ApiClient::fetchResults(int limit)
 {
     if (!m_baseUrl.isValid()) {
@@ -243,6 +266,18 @@ void ApiClient::sendPostRequest(RequestKind kind, const QUrl &url, const QJsonOb
 
     const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
     QNetworkReply *reply = m_network.post(request, body);
+    connect(reply, &QNetworkReply::finished, this, [this, kind, reply]() {
+        handleReply(kind, reply);
+    });
+}
+
+void ApiClient::sendDeleteRequest(RequestKind kind, const QUrl &url, const QString &taskId)
+{
+    QNetworkRequest request(url);
+    request.setRawHeader("Accept", "application/json");
+
+    QNetworkReply *reply = m_network.deleteResource(request);
+    reply->setProperty("taskId", taskId.trimmed());
     connect(reply, &QNetworkReply::finished, this, [this, kind, reply]() {
         handleReply(kind, reply);
     });
@@ -419,6 +454,15 @@ void ApiClient::handleReply(RequestKind kind, QNetworkReply *reply)
             break;
         }
         emit tasksFetched(tasks);
+        break;
+    }
+    case RequestKind::DeleteTask: {
+        TaskModels::TaskDeleteResponse task;
+        if (!TaskModels::parseTaskDeleteResponse(document, task, error)) {
+            emit requestFailed(buildParseFailure(kind, reply, body, error));
+            break;
+        }
+        emit taskDeleted(task);
         break;
     }
     case RequestKind::FetchResults: {

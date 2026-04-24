@@ -55,6 +55,11 @@ struct TaskListResponse {
     int limit = 0;
 };
 
+struct TaskDeleteResponse {
+    QString taskId;
+    bool deleted = false;
+};
+
 struct ResultItem {
     QString taskId;
     QString outputPath;
@@ -351,6 +356,21 @@ inline bool parseTaskListResponse(const QJsonDocument &document, TaskListRespons
     return true;
 }
 
+inline bool parseTaskDeleteResponse(const QJsonDocument &document, TaskDeleteResponse &target, QString &error)
+{
+    if (!document.isObject()) {
+        error = QStringLiteral("Task delete response root must be a JSON object.");
+        return false;
+    }
+
+    const QJsonObject object = document.object();
+    if (!requireString(object, QStringLiteral("task_id"), target.taskId, error)
+        || !requireBool(object, QStringLiteral("deleted"), target.deleted, error)) {
+        return false;
+    }
+    return true;
+}
+
 inline bool parseResultListResponse(const QJsonDocument &document, ResultListResponse &target, QString &error)
 {
     if (!document.isObject()) {
@@ -417,5 +437,6 @@ Q_DECLARE_METATYPE(TaskModels::HealthResponse)
 Q_DECLARE_METATYPE(TaskModels::TaskSummary)
 Q_DECLARE_METATYPE(TaskModels::TaskDetail)
 Q_DECLARE_METATYPE(TaskModels::TaskListResponse)
+Q_DECLARE_METATYPE(TaskModels::TaskDeleteResponse)
 Q_DECLARE_METATYPE(TaskModels::ResultItem)
 Q_DECLARE_METATYPE(TaskModels::ResultListResponse)

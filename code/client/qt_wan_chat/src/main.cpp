@@ -31,6 +31,7 @@ int main(int argc, char *argv[])
     qRegisterMetaType<TaskModels::TaskSummary>("TaskModels::TaskSummary");
     qRegisterMetaType<TaskModels::TaskDetail>("TaskModels::TaskDetail");
     qRegisterMetaType<TaskModels::TaskListResponse>("TaskModels::TaskListResponse");
+    qRegisterMetaType<TaskModels::TaskDeleteResponse>("TaskModels::TaskDeleteResponse");
     qRegisterMetaType<TaskModels::ResultItem>("TaskModels::ResultItem");
     qRegisterMetaType<TaskModels::ResultListResponse>("TaskModels::ResultListResponse");
 

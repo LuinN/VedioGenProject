@@ -12,6 +12,7 @@ enum class RequestKind {
     CreateTask,
     FetchTask,
     FetchTasks,
+    DeleteTask,
     FetchResults,
     DownloadResult,
 };
@@ -54,6 +55,7 @@ public:
     void createImageTask(const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId);
     void fetchTask(const QString &taskId);
     void fetchTasks(int limit);
+    void deleteTask(const QString &taskId);
     void fetchResults(int limit);
     void downloadResult(const QString &taskId, const QUrl &downloadUrl, const QString &localPath, const QString &purpose = {});
 
@@ -62,6 +64,7 @@ signals:
     void taskCreated(const TaskModels::TaskSummary &task);
     void taskFetched(const TaskModels::TaskDetail &task);
     void tasksFetched(const TaskModels::TaskListResponse &tasks);
+    void taskDeleted(const TaskModels::TaskDeleteResponse &task);
     void resultsFetched(const TaskModels::ResultListResponse &results);
     void resultDownloaded(const ResultDownload &download);
     void requestFailed(const RequestFailure &failure);
@@ -69,6 +72,7 @@ signals:
 private:
     void sendGetRequest(RequestKind kind, const QUrl &url);
     void sendPostRequest(RequestKind kind, const QUrl &url, const QJsonObject &payload);
+    void sendDeleteRequest(RequestKind kind, const QUrl &url, const QString &taskId);
     void sendMultipartCreateTask(const QUrl &url, const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId);
     void handleReply(RequestKind kind, class QNetworkReply *reply);
     void emitInvalidBaseUrlFailure(RequestKind kind, const QString &details);
