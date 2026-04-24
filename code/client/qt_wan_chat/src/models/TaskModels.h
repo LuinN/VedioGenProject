@@ -24,9 +24,13 @@ struct ApiErrorPayload {
 
 struct TaskSummary {
     QString taskId;
+    QString clientRequestId;
+    QString mode;
     QString status;
     QString prompt;
+    QString size;
     QString outputPath;
+    QString inputImagePath;
     QString errorMessage;
     QString logPath;
     QString createTimeRaw;
@@ -37,6 +41,7 @@ struct TaskSummary {
 
 struct TaskDetail : TaskSummary {
     bool outputExists = false;
+    bool inputImageExists = false;
     QString statusMessage;
     int progressCurrent = -1;
     int progressTotal = -1;
@@ -195,6 +200,22 @@ inline bool readOptionalNullableInt(const QJsonObject &object, const QString &ke
     return true;
 }
 
+inline bool readOptionalNullableBool(const QJsonObject &object, const QString &key, bool &target, QString &error)
+{
+    const QJsonValue value = object.value(key);
+    if (value.isUndefined() || value.isNull()) {
+        target = false;
+        return true;
+    }
+    if (!value.isBool()) {
+        error = QStringLiteral("Field '%1' must be a bool or null, got %2.")
+                    .arg(key, jsonTypeName(value));
+        return false;
+    }
+    target = value.toBool();
+    return true;
+}
+
 inline bool requireArray(const QJsonObject &object, const QString &key, QJsonArray &target, QString &error)
 {
     const QJsonValue value = object.value(key);
@@ -224,6 +245,12 @@ inline bool parseTaskSummaryObject(const QJsonObject &object, TaskSummary &targe
         return false;
     }
 
+    if (!readOptionalNullableString(object, QStringLiteral("mode"), target.mode, error)
+        || !readOptionalNullableString(object, QStringLiteral("size"), target.size, error)
+        || !readOptionalNullableString(object, QStringLiteral("input_image_path"), target.inputImagePath, error)) {
+        return false;
+    }
+
     target.createTime = parseTimestamp(target.createTimeRaw);
     target.updateTime = parseTimestamp(target.updateTimeRaw);
     return true;
@@ -233,6 +260,7 @@ inline bool parseTaskDetailObject(const QJsonObject &object, TaskDetail &target,
 {
     if (!parseTaskSummaryObject(object, target, error)
         || !requireBool(object, QStringLiteral("output_exists"), target.outputExists, error)
+        || !readOptionalNullableBool(object, QStringLiteral("input_image_exists"), target.inputImageExists, error)
         || !readOptionalNullableString(object, QStringLiteral("status_message"), target.statusMessage, error)
         || !readOptionalNullableInt(object, QStringLiteral("progress_current"), target.progressCurrent, error)
         || !readOptionalNullableInt(object, QStringLiteral("progress_total"), target.progressTotal, error)

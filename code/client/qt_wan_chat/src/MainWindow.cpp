@@ -9,14 +9,20 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QListWidgetItem>
+#include <QPixmap>
+#include <QProgressBar>
 #include <QProcess>
 #include <QPushButton>
 #include <QCoreApplication>
@@ -32,6 +38,7 @@
 #include <QTextBrowser>
 #include <QTextCursor>
 #include <QTimer>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <QtGlobal>
 
@@ -45,6 +52,8 @@ constexpr auto kAlternateSize = "704*1280";
 constexpr auto kDefaultDistro = "Ubuntu-24.04";
 constexpr auto kDownloadDirectorySetting = "downloads/directory";
 constexpr auto kVideoIndexFileName = "downloaded_videos.json";
+constexpr auto kTaskMetadataFileName = "metadata.json";
+constexpr qint64 kMaxInputImageBytes = 20ll * 1024ll * 1024ll;
 
 QString htmlEscapeAndBreaks(QString text)
 {
@@ -160,6 +169,28 @@ QString taskVideoFileName(const QString &taskId)
     return QStringLiteral("%1.mp4").arg(taskId.trimmed());
 }
 
+QString normalizedTaskMode(const TaskModels::TaskSummary &task)
+{
+    QString mode = task.mode.trimmed().toLower();
+    if (mode.isEmpty()) {
+        mode = task.inputImagePath.trimmed().isEmpty() ? QStringLiteral("t2v") : QStringLiteral("i2v");
+    }
+    return mode;
+}
+
+QString imageFileNameForExtension(const QString &extension)
+{
+    return QStringLiteral("input_image.%1").arg(extension.toLower());
+}
+
+QString cleanUuid()
+{
+    QString value = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    value.replace(QLatin1Char('{'), QLatin1Char('_'));
+    value.replace(QLatin1Char('}'), QLatin1Char('_'));
+    return value;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -211,7 +242,7 @@ void MainWindow::setupUi()
         });
 }
 
-void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs, const QString &downloadDirectory)
+void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs, const QString &downloadDirectory, const QString &imagePath)
 {
     if (m_smokeTestEnabled) {
         return;
@@ -220,6 +251,7 @@ void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs, const QStr
     m_smokeTestEnabled = true;
     m_smokeTestCompleted = false;
     m_smokeRequiresDownload = !downloadDirectory.trimmed().isEmpty();
+    m_smokeImagePath = imagePath.trimmed();
     m_smokeTestTaskId.clear();
 
     if (m_smokeRequiresDownload) {
@@ -230,10 +262,19 @@ void MainWindow::startSmokeTest(const QString &prompt, int timeoutMs, const QStr
         }
     }
 
-    appendDiagnostic(QStringLiteral("Smoke test scheduled."));
+    appendDiagnostic(m_smokeImagePath.isEmpty()
+                         ? QStringLiteral("Smoke test scheduled.")
+                         : QStringLiteral("Smoke i2v test scheduled with image: %1").arg(m_smokeImagePath));
     m_smokeTestTimeoutTimer->start(timeoutMs);
 
     QTimer::singleShot(1200, this, [this, prompt]() {
+        if (!m_smokeImagePath.isEmpty()) {
+            QString error;
+            if (!setCurrentInputImage(m_smokeImagePath, &error)) {
+                finishSmokeTest(false, error);
+                return;
+            }
+        }
         m_promptEdit->setPlainText(prompt);
         sendPrompt();
     });
@@ -254,6 +295,7 @@ void MainWindow::startTaskMonitorSmoke(const QString &taskId, int timeoutMs, con
     m_smokeTestEnabled = true;
     m_smokeTestCompleted = false;
     m_smokeRequiresDownload = !downloadDirectory.trimmed().isEmpty();
+    m_smokeImagePath.clear();
     m_smokeTestTaskId = trimmedTaskId;
     m_activeTaskIds.insert(trimmedTaskId);
 
@@ -284,28 +326,12 @@ QWidget *MainWindow::buildTasksPanel()
     auto *label = new QLabel(QStringLiteral("Tasks"), panel);
     layout->addWidget(label);
 
-    m_tasksTable = new QTableWidget(panel);
-    m_tasksTable->setColumnCount(6);
-    m_tasksTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Status"),
-         QStringLiteral("Progress"),
-         QStringLiteral("Stage"),
-         QStringLiteral("Task ID"),
-         QStringLiteral("Prompt"),
-         QStringLiteral("Updated")});
-    m_tasksTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_tasksTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_tasksTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_tasksTable->setAlternatingRowColors(true);
-    m_tasksTable->verticalHeader()->setVisible(false);
-    m_tasksTable->horizontalHeader()->setStretchLastSection(true);
-    m_tasksTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_tasksTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_tasksTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_tasksTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_tasksTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
-    m_tasksTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-    layout->addWidget(m_tasksTable);
+    m_tasksList = new QListWidget(panel);
+    m_tasksList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_tasksList->setSpacing(8);
+    m_tasksList->setUniformItemSizes(false);
+    m_tasksList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    layout->addWidget(m_tasksList);
 
     return panel;
 }
@@ -326,14 +352,45 @@ QWidget *MainWindow::buildChatPanel()
     auto *promptLabel = new QLabel(QStringLiteral("Prompt"), panel);
     layout->addWidget(promptLabel);
 
+    m_inputImagePreview = new QFrame(panel);
+    m_inputImagePreview->setObjectName(QStringLiteral("inputImagePreview"));
+    m_inputImagePreview->setVisible(false);
+    auto *previewLayout = new QHBoxLayout(m_inputImagePreview);
+    previewLayout->setContentsMargins(8, 8, 8, 8);
+    previewLayout->setSpacing(8);
+
+    m_inputImageThumbnail = new QLabel(m_inputImagePreview);
+    m_inputImageThumbnail->setFixedSize(96, 64);
+    m_inputImageThumbnail->setAlignment(Qt::AlignCenter);
+    m_inputImageThumbnail->setFrameShape(QFrame::StyledPanel);
+    m_inputImageThumbnail->setScaledContents(false);
+    previewLayout->addWidget(m_inputImageThumbnail);
+
+    m_inputImageNameLabel = new QLabel(m_inputImagePreview);
+    m_inputImageNameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_inputImageNameLabel->setWordWrap(true);
+    previewLayout->addWidget(m_inputImageNameLabel, 1);
+
+    m_removeImageButton = new QPushButton(QStringLiteral("Remove"), m_inputImagePreview);
+    previewLayout->addWidget(m_removeImageButton);
+    layout->addWidget(m_inputImagePreview);
+
     m_promptEdit = new QPlainTextEdit(panel);
     m_promptEdit->setPlaceholderText(QStringLiteral("Describe the video you want to generate..."));
     m_promptEdit->setTabChangesFocus(true);
     m_promptEdit->setMaximumBlockCount(200);
     layout->addWidget(m_promptEdit);
 
+    auto *sendRow = new QHBoxLayout();
+    sendRow->setContentsMargins(0, 0, 0, 0);
+    m_addImageButton = new QPushButton(QStringLiteral("+"), panel);
+    m_addImageButton->setToolTip(QStringLiteral("Add image"));
+    m_addImageButton->setFixedWidth(40);
+    sendRow->addWidget(m_addImageButton);
+    sendRow->addStretch(1);
     m_sendButton = new QPushButton(QStringLiteral("Send"), panel);
-    layout->addWidget(m_sendButton);
+    sendRow->addWidget(m_sendButton);
+    layout->addLayout(sendRow);
 
     auto *sendShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), panel);
     connect(sendShortcut, &QShortcut::activated, this, &MainWindow::sendPrompt);
@@ -459,11 +516,13 @@ void MainWindow::connectSignals()
     connect(m_applyServiceUrlButton, &QPushButton::clicked, this, &MainWindow::applyServiceUrl);
     connect(m_serviceUrlEdit, &QLineEdit::returnPressed, this, &MainWindow::applyServiceUrl);
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::sendPrompt);
+    connect(m_addImageButton, &QPushButton::clicked, this, &MainWindow::chooseInputImage);
+    connect(m_removeImageButton, &QPushButton::clicked, this, &MainWindow::removeInputImage);
     connect(m_chooseDownloadDirectoryButton, &QPushButton::clicked, this, &MainWindow::chooseDownloadDirectory);
     connect(m_downloadSelectedButton, &QPushButton::clicked, this, &MainWindow::downloadSelectedResult);
     connect(m_playVideoButton, &QPushButton::clicked, this, &MainWindow::playSelectedVideo);
     connect(m_pollTimer, &QTimer::timeout, this, &MainWindow::pollActiveTasks);
-    connect(m_tasksTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::updateOutputDirectoryField);
+    connect(m_tasksList, &QListWidget::itemSelectionChanged, this, &MainWindow::updateOutputDirectoryField);
     connect(m_resultsTable, &QTableWidget::itemSelectionChanged, this, &MainWindow::updateOutputDirectoryField);
     connect(m_videosTable, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem *) {
         playSelectedVideo();
@@ -517,11 +576,34 @@ void MainWindow::sendPrompt()
         return;
     }
 
-    appendChatMessage(QStringLiteral("User"), prompt);
+    const bool hasInputImage = !m_currentInputImage.cachedPath.trimmed().isEmpty();
+    if (hasInputImage && !QFileInfo::exists(m_currentInputImage.cachedPath)) {
+        const QString message = QStringLiteral("Cached input image is missing: %1").arg(m_currentInputImage.cachedPath);
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        return;
+    }
+
+    appendChatMessage(
+        QStringLiteral("User"),
+        hasInputImage
+            ? QStringLiteral("%1\n[Image] %2").arg(prompt, m_currentInputImage.fileName)
+            : prompt);
     showUserNotice(QStringLiteral("Creating task..."));
-    appendDiagnostic(QStringLiteral("Submitting task with size=%1 to %2")
-                         .arg(size, m_apiClient.baseUrl().toString()));
-    m_apiClient.createTask(prompt, size);
+
+    if (hasInputImage) {
+        const InputImageAttachment attachment = m_currentInputImage;
+        m_pendingImageRequests.insert(attachment.clientRequestId, attachment);
+        appendDiagnostic(QStringLiteral("Submitting i2v task with size=%1 image=%2 to %3")
+                             .arg(size, attachment.cachedPath, m_apiClient.baseUrl().toString()));
+        m_apiClient.createImageTask(prompt, size, attachment.cachedPath, attachment.clientRequestId);
+        clearCurrentInputImage(false);
+    } else {
+        appendDiagnostic(QStringLiteral("Submitting t2v task with size=%1 to %2")
+                             .arg(size, m_apiClient.baseUrl().toString()));
+        m_apiClient.createTask(prompt, size);
+    }
     m_promptEdit->clear();
 }
 
@@ -557,6 +639,37 @@ void MainWindow::updateOutputDirectoryField()
     if (!error.isEmpty()) {
         appendDiagnostic(QStringLiteral("Output directory preview unavailable: %1").arg(error));
     }
+}
+
+void MainWindow::chooseInputImage()
+{
+    const QString filePath = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Choose Input Image"),
+        QDir::homePath(),
+        QStringLiteral("Images (*.png *.jpg *.jpeg *.webp)"));
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    QString error;
+    if (!setCurrentInputImage(filePath, &error)) {
+        appendDiagnostic(error);
+        appendChatMessage(QStringLiteral("System"), error);
+        showUserNotice(error);
+        return;
+    }
+
+    appendDiagnostic(QStringLiteral("Input image selected: %1 -> %2")
+                         .arg(filePath, m_currentInputImage.cachedPath));
+    showUserNotice(QStringLiteral("Input image attached."));
+}
+
+void MainWindow::removeInputImage()
+{
+    clearCurrentInputImage(true);
+    appendDiagnostic(QStringLiteral("Input image removed."));
+    showUserNotice(QStringLiteral("Input image removed."));
 }
 
 void MainWindow::chooseDownloadDirectory()
@@ -673,6 +786,21 @@ void MainWindow::onHealthChecked(const TaskModels::HealthResponse &health)
 
 void MainWindow::onTaskCreated(const TaskModels::TaskSummary &task)
 {
+    if (!task.clientRequestId.isEmpty() && m_pendingImageRequests.contains(task.clientRequestId)) {
+        TaskLocalMetadata metadata;
+        QString error;
+        if (finalizePendingImageForTask(task, metadata, &error)) {
+            m_taskMetadata.insert(task.taskId, metadata);
+            saveTaskMetadata(metadata);
+            appendDiagnostic(QStringLiteral("Saved task image metadata: task_id=%1 local_image=%2 server_image=%3")
+                                 .arg(task.taskId, metadata.inputImageLocalPath, metadata.inputImageServerPath));
+        } else {
+            appendDiagnostic(error);
+            appendChatMessage(QStringLiteral("System"), error);
+            showUserNotice(error);
+        }
+    }
+
     syncTaskSummary(task);
     m_activeTaskIds.insert(task.taskId);
     startPollingIfNeeded();
@@ -685,12 +813,23 @@ void MainWindow::onTaskCreated(const TaskModels::TaskSummary &task)
         QStringLiteral("System"),
         QStringLiteral("Task created\n"
                        "task_id: %1\n"
-                       "status: %2\n"
-                       "log_path: %3")
-            .arg(task.taskId, task.status, task.logPath));
-    appendDiagnostic(QStringLiteral("Task created: %1 status=%2").arg(task.taskId, task.status));
+                       "mode: %2\n"
+                       "status: %3\n"
+                       "log_path: %4")
+            .arg(task.taskId, normalizedTaskMode(task), task.status, task.logPath));
+    appendDiagnostic(QStringLiteral("Task created: %1 mode=%2 status=%3")
+                         .arg(task.taskId, normalizedTaskMode(task), task.status));
     refreshTasksTable();
     showUserNotice(QStringLiteral("Task created: %1").arg(task.taskId));
+
+    if (m_smokeTestEnabled && !m_smokeImagePath.isEmpty() && !m_smokeRequiresDownload) {
+        const QString metadataPath = taskMetadataPath(task.taskId);
+        const bool hasMetadata = QFileInfo::exists(metadataPath);
+        finishSmokeTest(
+            hasMetadata && normalizedTaskMode(task) == QStringLiteral("i2v"),
+            QStringLiteral("Smoke i2v task created: %1 | mode=%2 | metadata=%3 | input_image_path=%4")
+                .arg(task.taskId, normalizedTaskMode(task), metadataPath, task.inputImagePath));
+    }
 }
 
 void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
@@ -700,6 +839,24 @@ void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
     const TaskModels::TaskDetail previous = m_tasks.value(task.taskId);
     const bool hadPrevious = m_tasks.contains(task.taskId);
     syncTaskDetail(task);
+    if (m_taskMetadata.contains(task.taskId)) {
+        TaskLocalMetadata metadata = m_taskMetadata.value(task.taskId);
+        bool changed = false;
+        const QString mode = normalizedTaskMode(task);
+        if (!mode.isEmpty() && metadata.mode != mode) {
+            metadata.mode = mode;
+            changed = true;
+        }
+        if (!task.inputImagePath.isEmpty() && metadata.inputImageServerPath != task.inputImagePath) {
+            metadata.inputImageServerPath = task.inputImagePath;
+            metadata.hasInputImage = true;
+            changed = true;
+        }
+        if (changed) {
+            m_taskMetadata.insert(task.taskId, metadata);
+            saveTaskMetadata(metadata);
+        }
+    }
     refreshTasksTable();
 
     if (!hadPrevious || visibleTaskStateChanged(previous, task)) {
@@ -731,6 +888,9 @@ void MainWindow::onTaskFetched(const TaskModels::TaskDetail &task)
             }
             if (!task.downloadUrl.isEmpty()) {
                 summary += QStringLiteral(" | download_url=%1").arg(task.downloadUrl);
+            }
+            if (!task.inputImagePath.isEmpty()) {
+                summary += QStringLiteral(" | input_image_path=%1").arg(task.inputImagePath);
             }
             if (!task.errorMessage.isEmpty()) {
                 summary += QStringLiteral(" | error_message=%1").arg(task.errorMessage);
@@ -834,6 +994,17 @@ void MainWindow::onRequestFailed(const RequestFailure &failure)
         const QString taskId = failure.url.path().section(QLatin1Char('/'), -1);
         if (!taskId.isEmpty()) {
             m_inFlightTaskIds.remove(taskId);
+        }
+    } else if (failure.kind == RequestKind::CreateTask && !failure.clientRequestId.isEmpty()) {
+        if (m_pendingImageRequests.contains(failure.clientRequestId)) {
+            const InputImageAttachment attachment = m_pendingImageRequests.take(failure.clientRequestId);
+            const QString root = QFileInfo(tasksCacheRoot()).absoluteFilePath();
+            const QString pending = QFileInfo(attachment.pendingDirectory).absoluteFilePath();
+            if (!pending.isEmpty() && pending.startsWith(root, Qt::CaseInsensitive)) {
+                QDir(attachment.pendingDirectory).removeRecursively();
+            }
+            appendDiagnostic(QStringLiteral("Removed pending image cache after create task failure: %1")
+                                 .arg(attachment.pendingDirectory));
         }
     } else if (failure.kind == RequestKind::DownloadResult) {
         const QString taskId = failure.url.path().section(QLatin1Char('/'), -2, -2);
@@ -948,41 +1119,105 @@ void MainWindow::refreshTasksTable()
         return newerDateTimeFirst(left.updateTime, left.updateTimeRaw, right.updateTime, right.updateTimeRaw);
     });
 
-    m_tasksTable->setRowCount(tasks.size());
-    for (int row = 0; row < tasks.size(); ++row) {
-        const TaskModels::TaskDetail &task = tasks.at(row);
-
-        auto *statusItem = new QTableWidgetItem(task.status);
-        statusItem->setData(Qt::UserRole, task.taskId);
-        statusItem->setToolTip(formatRuntimeSummary(task));
-        auto *progressItem = new QTableWidgetItem(formatProgressText(task));
-        progressItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        progressItem->setToolTip(formatRuntimeSummary(task));
-        auto *stageItem = new QTableWidgetItem(formatStageText(task));
-        stageItem->setToolTip(formatRuntimeSummary(task));
-        auto *taskIdItem = new QTableWidgetItem(task.taskId);
-        taskIdItem->setData(Qt::UserRole, task.taskId);
-        auto *promptItem = new QTableWidgetItem(task.prompt);
-        promptItem->setToolTip(task.prompt);
-        auto *updatedItem = new QTableWidgetItem(formatTimestamp(task.updateTime, task.updateTimeRaw));
-
-        m_tasksTable->setItem(row, 0, statusItem);
-        m_tasksTable->setItem(row, 1, progressItem);
-        m_tasksTable->setItem(row, 2, stageItem);
-        m_tasksTable->setItem(row, 3, taskIdItem);
-        m_tasksTable->setItem(row, 4, promptItem);
-        m_tasksTable->setItem(row, 5, updatedItem);
+    m_tasksList->clear();
+    for (const TaskModels::TaskDetail &task : tasks) {
+        auto *item = new QListWidgetItem();
+        item->setData(Qt::UserRole, task.taskId);
+        item->setToolTip(formatRuntimeSummary(task));
+        item->setSizeHint(QSize(360, normalizedTaskMode(task) == QStringLiteral("i2v") ? 170 : 132));
+        m_tasksList->addItem(item);
+        m_tasksList->setItemWidget(item, buildTaskCard(task));
     }
 
     if (!preservedTaskId.isEmpty()) {
-        for (int row = 0; row < m_tasksTable->rowCount(); ++row) {
-            QTableWidgetItem *item = m_tasksTable->item(row, 0);
+        for (int row = 0; row < m_tasksList->count(); ++row) {
+            QListWidgetItem *item = m_tasksList->item(row);
             if (item != nullptr && item->data(Qt::UserRole).toString() == preservedTaskId) {
-                m_tasksTable->selectRow(row);
+                m_tasksList->setCurrentItem(item);
                 break;
             }
         }
     }
+}
+
+QWidget *MainWindow::buildTaskCard(const TaskModels::TaskDetail &task)
+{
+    auto *card = new QFrame(m_tasksList);
+    card->setFrameShape(QFrame::StyledPanel);
+    card->setLineWidth(1);
+    auto *layout = new QHBoxLayout(card);
+    layout->setContentsMargins(10, 10, 10, 10);
+    layout->setSpacing(10);
+
+    const QString referenceImagePath = taskReferenceImagePath(task);
+    const bool shouldShowReference = normalizedTaskMode(task) == QStringLiteral("i2v")
+        || task.inputImageExists
+        || !task.inputImagePath.isEmpty()
+        || !referenceImagePath.isEmpty();
+    if (shouldShowReference) {
+        auto *thumbnail = new QLabel(card);
+        thumbnail->setFixedSize(84, 84);
+        thumbnail->setAlignment(Qt::AlignCenter);
+        thumbnail->setFrameShape(QFrame::StyledPanel);
+        if (!referenceImagePath.isEmpty() && QFileInfo::exists(referenceImagePath)) {
+            QPixmap pixmap(referenceImagePath);
+            thumbnail->setPixmap(pixmap.scaled(thumbnail->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            thumbnail->setToolTip(referenceImagePath);
+        } else {
+            thumbnail->setText(QStringLiteral("No local\nimage"));
+            thumbnail->setToolTip(QStringLiteral("The task has an input image, but the local cached copy is missing."));
+        }
+        layout->addWidget(thumbnail);
+    }
+
+    auto *content = new QVBoxLayout();
+    content->setContentsMargins(0, 0, 0, 0);
+    content->setSpacing(4);
+
+    auto *topRow = new QHBoxLayout();
+    auto *modeLabel = new QLabel(taskModeLabel(task), card);
+    modeLabel->setFrameShape(QFrame::StyledPanel);
+    modeLabel->setMargin(4);
+    topRow->addWidget(modeLabel);
+
+    auto *statusLabel = new QLabel(task.status, card);
+    statusLabel->setFrameShape(QFrame::StyledPanel);
+    statusLabel->setMargin(4);
+    statusLabel->setToolTip(formatRuntimeSummary(task));
+    topRow->addWidget(statusLabel);
+    topRow->addStretch(1);
+    topRow->addWidget(new QLabel(formatTimestamp(task.updateTime, task.updateTimeRaw), card));
+    content->addLayout(topRow);
+
+    auto *promptLabel = new QLabel(task.prompt, card);
+    promptLabel->setWordWrap(true);
+    promptLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    promptLabel->setToolTip(task.prompt);
+    content->addWidget(promptLabel);
+
+    auto *progress = new QProgressBar(card);
+    progress->setRange(0, 100);
+    progress->setValue(task.progressPercent >= 0 ? task.progressPercent : 0);
+    progress->setFormat(formatProgressText(task));
+    progress->setTextVisible(true);
+    content->addWidget(progress);
+
+    const QString details = QStringLiteral("%1 | %2 | task_id=%3")
+                                .arg(formatStageText(task), task.size.isEmpty() ? QStringLiteral("-") : task.size, task.taskId);
+    auto *detailsLabel = new QLabel(details, card);
+    detailsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    detailsLabel->setToolTip(task.taskId);
+    content->addWidget(detailsLabel);
+
+    if (!task.errorMessage.isEmpty()) {
+        auto *errorLabel = new QLabel(task.errorMessage, card);
+        errorLabel->setWordWrap(true);
+        errorLabel->setToolTip(task.errorMessage);
+        content->addWidget(errorLabel);
+    }
+
+    layout->addLayout(content, 1);
+    return card;
 }
 
 void MainWindow::refreshResultsTable()
@@ -1076,6 +1311,19 @@ void MainWindow::syncTaskSummary(const TaskModels::TaskSummary &task)
 void MainWindow::syncTaskDetail(const TaskModels::TaskDetail &task)
 {
     m_tasks.insert(task.taskId, task);
+    if (!task.taskId.isEmpty()
+        && (normalizedTaskMode(task) == QStringLiteral("i2v") || !task.inputImagePath.isEmpty() || task.inputImageExists)
+        && !m_taskMetadata.contains(task.taskId)) {
+        TaskLocalMetadata metadata;
+        metadata.taskId = task.taskId;
+        metadata.prompt = task.prompt;
+        metadata.mode = normalizedTaskMode(task);
+        metadata.inputImageServerPath = task.inputImagePath;
+        metadata.hasInputImage = true;
+        metadata.createTimeRaw = task.createTimeRaw;
+        metadata.createTime = task.createTime;
+        m_taskMetadata.insert(task.taskId, metadata);
+    }
     updateOutputDirectoryField();
 }
 
@@ -1092,14 +1340,10 @@ void MainWindow::syncDownloadedVideo(const DownloadedVideo &video)
 
 QString MainWindow::selectedTaskId() const
 {
-    const QModelIndexList rows = m_tasksTable->selectionModel() != nullptr
-        ? m_tasksTable->selectionModel()->selectedRows()
-        : QModelIndexList{};
-    if (rows.isEmpty()) {
+    if (m_tasksList == nullptr || m_tasksList->currentItem() == nullptr) {
         return {};
     }
-    QTableWidgetItem *item = m_tasksTable->item(rows.first().row(), 0);
-    return item != nullptr ? item->data(Qt::UserRole).toString() : QString{};
+    return m_tasksList->currentItem()->data(Qt::UserRole).toString();
 }
 
 QString MainWindow::selectedResultTaskId() const
@@ -1192,6 +1436,7 @@ void MainWindow::loadPersistentState()
     }
 
     loadDownloadedVideos();
+    loadTaskMetadata();
     refreshVideosTable();
 }
 
@@ -1283,6 +1528,359 @@ QString MainWindow::videoIndexPath() const
     }
     QDir().mkpath(root);
     return QDir(root).filePath(QString::fromLatin1(kVideoIndexFileName));
+}
+
+void MainWindow::loadTaskMetadata()
+{
+    m_taskMetadata.clear();
+
+    QDir root(tasksCacheRoot());
+    const QFileInfoList dirs = root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo &dirInfo : dirs) {
+        restoreTaskMetadataFromFile(QDir(dirInfo.absoluteFilePath()).filePath(QString::fromLatin1(kTaskMetadataFileName)));
+    }
+    appendDiagnostic(QStringLiteral("Loaded %1 task metadata item(s).").arg(m_taskMetadata.size()));
+}
+
+void MainWindow::saveTaskMetadata(const TaskLocalMetadata &metadata)
+{
+    if (metadata.taskId.trimmed().isEmpty()) {
+        appendDiagnostic(QStringLiteral("Skipped task metadata save because task_id is empty."));
+        return;
+    }
+
+    const QString directory = taskCacheDirectory(metadata.taskId);
+    QDir().mkpath(directory);
+    const QString metadataPath = metadataPathForDirectory(directory);
+    QSaveFile file(metadataPath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        appendDiagnostic(QStringLiteral("Failed to open task metadata for writing: %1 | path=%2")
+                             .arg(file.errorString(), metadataPath));
+        return;
+    }
+
+    const QJsonObject object{
+        {QStringLiteral("task_id"), metadata.taskId},
+        {QStringLiteral("client_request_id"), metadata.clientRequestId},
+        {QStringLiteral("prompt"), metadata.prompt},
+        {QStringLiteral("mode"), metadata.mode},
+        {QStringLiteral("input_image_local_path"), metadata.inputImageLocalPath},
+        {QStringLiteral("input_image_server_path"), metadata.inputImageServerPath},
+        {QStringLiteral("has_input_image"), metadata.hasInputImage},
+        {QStringLiteral("create_time"), metadata.createTimeRaw},
+    };
+    file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
+    if (!file.commit()) {
+        appendDiagnostic(QStringLiteral("Failed to write task metadata: %1 | path=%2")
+                             .arg(file.errorString(), metadataPath));
+    }
+}
+
+bool MainWindow::restoreTaskMetadataFromFile(const QString &metadataPath)
+{
+    QFile file(metadataPath);
+    if (!file.exists()) {
+        return false;
+    }
+    if (!file.open(QIODevice::ReadOnly)) {
+        appendDiagnostic(QStringLiteral("Failed to open task metadata: %1 | path=%2")
+                             .arg(file.errorString(), metadataPath));
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        appendDiagnostic(QStringLiteral("Failed to parse task metadata: %1 | path=%2")
+                             .arg(parseError.errorString(), metadataPath));
+        return false;
+    }
+
+    const QJsonObject object = document.object();
+    TaskLocalMetadata metadata;
+    metadata.taskId = object.value(QStringLiteral("task_id")).toString();
+    metadata.clientRequestId = object.value(QStringLiteral("client_request_id")).toString();
+    metadata.prompt = object.value(QStringLiteral("prompt")).toString();
+    metadata.mode = object.value(QStringLiteral("mode")).toString();
+    metadata.inputImageLocalPath = object.value(QStringLiteral("input_image_local_path")).toString();
+    metadata.inputImageServerPath = object.value(QStringLiteral("input_image_server_path")).toString();
+    metadata.hasInputImage = object.value(QStringLiteral("has_input_image")).toBool(false);
+    metadata.createTimeRaw = object.value(QStringLiteral("create_time")).toString();
+    metadata.createTime = TaskModels::parseTimestamp(metadata.createTimeRaw);
+    if (metadata.taskId.isEmpty()) {
+        appendDiagnostic(QStringLiteral("Ignored task metadata without task_id: %1").arg(metadataPath));
+        return false;
+    }
+
+    m_taskMetadata.insert(metadata.taskId, metadata);
+    return true;
+}
+
+QString MainWindow::tasksCacheRoot() const
+{
+    QString root = qEnvironmentVariable("LOCALAPPDATA");
+    if (root.isEmpty()) {
+        root = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    } else {
+        root = QDir(root).filePath(QStringLiteral("VideoGenProject"));
+    }
+    if (root.isEmpty()) {
+        root = QCoreApplication::applicationDirPath();
+    }
+    const QString tasksRoot = QDir(root).filePath(QStringLiteral("tasks"));
+    QDir().mkpath(tasksRoot);
+    return tasksRoot;
+}
+
+QString MainWindow::taskCacheDirectory(const QString &taskId) const
+{
+    return QDir(tasksCacheRoot()).filePath(taskId.trimmed());
+}
+
+QString MainWindow::pendingTaskCacheDirectory(const QString &clientRequestId) const
+{
+    return QDir(tasksCacheRoot()).filePath(QStringLiteral("pending_%1").arg(clientRequestId.trimmed()));
+}
+
+QString MainWindow::taskMetadataPath(const QString &taskId) const
+{
+    return metadataPathForDirectory(taskCacheDirectory(taskId));
+}
+
+QString MainWindow::metadataPathForDirectory(const QString &directory) const
+{
+    return QDir(directory).filePath(QString::fromLatin1(kTaskMetadataFileName));
+}
+
+bool MainWindow::validateInputImagePath(const QString &sourcePath, QString &extension, qint64 &fileSize, QString *error) const
+{
+    const QFileInfo info(sourcePath.trimmed());
+    if (!info.exists() || !info.isFile()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Image file does not exist: %1").arg(sourcePath.trimmed());
+        }
+        return false;
+    }
+    if (!info.isReadable()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Image file is not readable: %1").arg(info.absoluteFilePath());
+        }
+        return false;
+    }
+
+    extension = info.suffix().toLower();
+    if (extension != QStringLiteral("png")
+        && extension != QStringLiteral("jpg")
+        && extension != QStringLiteral("jpeg")
+        && extension != QStringLiteral("webp")) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Unsupported image format '.%1'. Supported formats: png, jpg, jpeg, webp.").arg(extension);
+        }
+        return false;
+    }
+
+    fileSize = info.size();
+    if (fileSize > kMaxInputImageBytes) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Image is too large: %1. Maximum allowed size is 20 MiB.")
+                         .arg(formatFileSize(fileSize));
+        }
+        return false;
+    }
+
+    QImageReader reader(info.absoluteFilePath());
+    if (!reader.canRead()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Selected file is not a readable image: %1").arg(info.absoluteFilePath());
+        }
+        return false;
+    }
+
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
+}
+
+bool MainWindow::prepareInputImageAttachment(const QString &sourcePath, InputImageAttachment &attachment, QString *error)
+{
+    QString extension;
+    qint64 fileSize = 0;
+    if (!validateInputImagePath(sourcePath, extension, fileSize, error)) {
+        return false;
+    }
+
+    const QFileInfo sourceInfo(sourcePath.trimmed());
+    const QString clientRequestId = cleanUuid();
+    const QString pendingDirectory = pendingTaskCacheDirectory(clientRequestId);
+    if (!QDir().mkpath(pendingDirectory)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Failed to create local task cache directory: %1").arg(pendingDirectory);
+        }
+        return false;
+    }
+
+    const QString cachedPath = QDir(pendingDirectory).filePath(imageFileNameForExtension(extension));
+    QFile::remove(cachedPath);
+    if (!QFile::copy(sourceInfo.absoluteFilePath(), cachedPath)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Failed to copy image into local task cache: %1").arg(cachedPath);
+        }
+        return false;
+    }
+
+    attachment = {};
+    attachment.clientRequestId = clientRequestId;
+    attachment.sourcePath = sourceInfo.absoluteFilePath();
+    attachment.cachedPath = cachedPath;
+    attachment.pendingDirectory = pendingDirectory;
+    attachment.fileName = sourceInfo.fileName();
+    attachment.extension = extension;
+    attachment.fileSize = fileSize;
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
+}
+
+bool MainWindow::setCurrentInputImage(const QString &sourcePath, QString *error)
+{
+    InputImageAttachment attachment;
+    if (!prepareInputImageAttachment(sourcePath, attachment, error)) {
+        return false;
+    }
+
+    clearCurrentInputImage(true);
+    m_currentInputImage = attachment;
+    updateInputImagePreview();
+    return true;
+}
+
+void MainWindow::clearCurrentInputImage(bool removeCachedFile)
+{
+    if (removeCachedFile && !m_currentInputImage.pendingDirectory.isEmpty()) {
+        const QString root = QFileInfo(tasksCacheRoot()).absoluteFilePath();
+        const QString pending = QFileInfo(m_currentInputImage.pendingDirectory).absoluteFilePath();
+        if (pending.startsWith(root, Qt::CaseInsensitive)) {
+            QDir(m_currentInputImage.pendingDirectory).removeRecursively();
+        }
+    }
+    m_currentInputImage = {};
+    updateInputImagePreview();
+}
+
+void MainWindow::updateInputImagePreview()
+{
+    const bool hasImage = !m_currentInputImage.cachedPath.isEmpty();
+    if (m_inputImagePreview != nullptr) {
+        m_inputImagePreview->setVisible(hasImage);
+    }
+    if (!hasImage) {
+        if (m_inputImageThumbnail != nullptr) {
+            m_inputImageThumbnail->clear();
+        }
+        if (m_inputImageNameLabel != nullptr) {
+            m_inputImageNameLabel->clear();
+        }
+        return;
+    }
+
+    if (m_inputImageThumbnail != nullptr) {
+        QPixmap pixmap(m_currentInputImage.cachedPath);
+        m_inputImageThumbnail->setPixmap(
+            pixmap.scaled(m_inputImageThumbnail->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        m_inputImageThumbnail->setToolTip(m_currentInputImage.cachedPath);
+    }
+    if (m_inputImageNameLabel != nullptr) {
+        m_inputImageNameLabel->setText(
+            QStringLiteral("%1\n%2")
+                .arg(m_currentInputImage.fileName, formatFileSize(m_currentInputImage.fileSize)));
+        m_inputImageNameLabel->setToolTip(m_currentInputImage.cachedPath);
+    }
+}
+
+bool MainWindow::finalizePendingImageForTask(const TaskModels::TaskSummary &task, TaskLocalMetadata &metadata, QString *error)
+{
+    if (task.clientRequestId.isEmpty() || !m_pendingImageRequests.contains(task.clientRequestId)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("No pending image cache was found for created task %1.").arg(task.taskId);
+        }
+        return false;
+    }
+
+    InputImageAttachment attachment = m_pendingImageRequests.take(task.clientRequestId);
+    const QString finalDirectory = taskCacheDirectory(task.taskId);
+    if (!QDir().mkpath(finalDirectory)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Failed to create final task cache directory: %1").arg(finalDirectory);
+        }
+        return false;
+    }
+
+    const QString finalImagePath = QDir(finalDirectory).filePath(imageFileNameForExtension(attachment.extension));
+    QFile::remove(finalImagePath);
+    bool moved = QFile::rename(attachment.cachedPath, finalImagePath);
+    if (!moved) {
+        moved = QFile::copy(attachment.cachedPath, finalImagePath);
+        if (moved) {
+            QFile::remove(attachment.cachedPath);
+        }
+    }
+    if (!moved) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Failed to move cached input image into task directory: %1 -> %2")
+                         .arg(attachment.cachedPath, finalImagePath);
+        }
+        return false;
+    }
+    QDir(attachment.pendingDirectory).removeRecursively();
+
+    metadata = {};
+    metadata.taskId = task.taskId;
+    metadata.clientRequestId = task.clientRequestId;
+    metadata.prompt = task.prompt;
+    metadata.mode = normalizedTaskMode(task);
+    metadata.inputImageLocalPath = finalImagePath;
+    metadata.inputImageServerPath = task.inputImagePath;
+    metadata.hasInputImage = true;
+    metadata.createTimeRaw = task.createTimeRaw;
+    metadata.createTime = task.createTime;
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
+}
+
+QString MainWindow::taskReferenceImagePath(const TaskModels::TaskDetail &task) const
+{
+    if (m_taskMetadata.contains(task.taskId)) {
+        const QString localPath = m_taskMetadata.value(task.taskId).inputImageLocalPath;
+        if (!localPath.isEmpty()) {
+            return localPath;
+        }
+    }
+
+    const QDir dir(taskCacheDirectory(task.taskId));
+    const QStringList candidates{
+        QStringLiteral("input_image.png"),
+        QStringLiteral("input_image.jpg"),
+        QStringLiteral("input_image.jpeg"),
+        QStringLiteral("input_image.webp"),
+    };
+    for (const QString &candidate : candidates) {
+        const QString path = dir.filePath(candidate);
+        if (QFileInfo::exists(path)) {
+            return path;
+        }
+    }
+    return {};
+}
+
+QString MainWindow::taskModeLabel(const TaskModels::TaskDetail &task) const
+{
+    return normalizedTaskMode(task) == QStringLiteral("i2v")
+        ? QStringLiteral("图文生成")
+        : QStringLiteral("文生视频");
 }
 
 QString MainWindow::configuredDownloadDirectory() const
@@ -1460,9 +2058,13 @@ TaskModels::TaskDetail MainWindow::summaryToDetail(const TaskModels::TaskSummary
 {
     TaskModels::TaskDetail detail;
     detail.taskId = task.taskId;
+    detail.clientRequestId = task.clientRequestId;
+    detail.mode = task.mode;
     detail.status = task.status;
     detail.prompt = task.prompt;
+    detail.size = task.size;
     detail.outputPath = task.outputPath;
+    detail.inputImagePath = task.inputImagePath;
     detail.errorMessage = task.errorMessage;
     detail.logPath = task.logPath;
     detail.createTimeRaw = task.createTimeRaw;
@@ -1478,6 +2080,16 @@ TaskModels::TaskDetail MainWindow::summaryToDetail(const TaskModels::TaskSummary
         detail.progressTotal = existing.progressTotal;
         detail.progressPercent = existing.progressPercent;
         detail.downloadUrl = existing.downloadUrl;
+        if (detail.mode.isEmpty()) {
+            detail.mode = existing.mode;
+        }
+        if (detail.size.isEmpty()) {
+            detail.size = existing.size;
+        }
+        if (detail.inputImagePath.isEmpty()) {
+            detail.inputImagePath = existing.inputImagePath;
+        }
+        detail.inputImageExists = existing.inputImageExists;
     }
     return detail;
 }

@@ -2,6 +2,35 @@
 
 ## 当前真实阻塞
 
+### 新增：Windows 客户端已实现 multipart i2v，但当前运行中的服务端进程仍按旧 JSON-only 协议响应
+
+当前客户端完成状态：
+
+- 输入区已支持添加一张本地图片
+- 图片会复制到 `%LOCALAPPDATA%/VideoGenProject/tasks/pending_<uuid>/input_image.<ext>`
+- 有图片时 `POST /api/tasks` 已改为 `multipart/form-data`
+- 无图片时仍保留原 `application/json` 的 `mode=t2v`
+- 上传失败会展示稳定错误码，并清理 pending 图片缓存
+
+真实 smoke 结果：
+
+```text
+qt_wan_chat.exe --smoke-prompt="i2v client smoke test" --smoke-image=... --smoke-timeout-ms=10000
+body: Input should be a valid dictionary or object to extract fields from [HTTP 422] [code=validation_error]
+```
+
+当前判断：
+
+- 仓库中的服务端代码和协议文档已经支持 multipart `i2v`
+- 但用户已启动的当前服务端进程明显仍按旧 JSON body 解析 `POST /api/tasks`
+- 本轮按要求没有启动、停止或重启服务端，因此不能把真实 `i2v` 创建任务验收到成功
+
+影响：
+
+- 客户端代码路径已编译通过
+- 现有 T2V 任务 monitor smoke 仍通过
+- 真实 `i2v` HTTP 成功创建需要服务端侧重启/更新运行进程后再复验
+
 ### 新增：`i2v` 上传协议已完成，但真实 GPU `i2v` 长任务还没在本轮重跑
 
 当前状态：

@@ -54,16 +54,25 @@ int main(int argc, char *argv[])
         QStringList{QStringLiteral("smoke-download-dir")},
         QStringLiteral("Download the smoke-test result into this local Windows directory before exiting successfully."),
         QStringLiteral("directory"));
+    QCommandLineOption smokeImageOption(
+        QStringList{QStringLiteral("smoke-image")},
+        QStringLiteral("Attach this local image to --smoke-prompt and create an i2v task."),
+        QStringLiteral("path"));
     parser.addOption(smokePromptOption);
     parser.addOption(smokeTaskIdOption);
     parser.addOption(smokeTimeoutOption);
     parser.addOption(smokeDownloadDirOption);
+    parser.addOption(smokeImageOption);
     parser.process(app);
 
     const bool hasSmokePrompt = parser.isSet(smokePromptOption);
     const bool hasSmokeTaskId = parser.isSet(smokeTaskIdOption);
     if (hasSmokePrompt && hasSmokeTaskId) {
         QTextStream(stderr) << "--smoke-prompt and --smoke-task-id are mutually exclusive.\n";
+        return 2;
+    }
+    if (parser.isSet(smokeImageOption) && !hasSmokePrompt) {
+        QTextStream(stderr) << "--smoke-image requires --smoke-prompt.\n";
         return 2;
     }
 
@@ -82,6 +91,7 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     const QString smokeDownloadDir = parser.value(smokeDownloadDirOption).trimmed();
+    const QString smokeImagePath = parser.value(smokeImageOption).trimmed();
     if (!smokeDownloadDir.isEmpty() && !hasSmokePrompt && !hasSmokeTaskId) {
         QString error;
         if (!window.setDownloadDirectory(smokeDownloadDir, &error)) {
@@ -103,9 +113,9 @@ int main(int argc, char *argv[])
             }
             app.exit(1);
         });
-        QTimer::singleShot(0, &window, [prompt, taskId, smokeTimeoutMs, smokeDownloadDir, hasSmokePrompt, &window]() {
+        QTimer::singleShot(0, &window, [prompt, taskId, smokeTimeoutMs, smokeDownloadDir, smokeImagePath, hasSmokePrompt, &window]() {
             if (hasSmokePrompt) {
-                window.startSmokeTest(prompt, smokeTimeoutMs, smokeDownloadDir);
+                window.startSmokeTest(prompt, smokeTimeoutMs, smokeDownloadDir, smokeImagePath);
                 return;
             }
             window.startTaskMonitorSmoke(taskId, smokeTimeoutMs, smokeDownloadDir);

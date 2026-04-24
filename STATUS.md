@@ -90,9 +90,25 @@
 - 已支持统一下载目录，目录配置写入 `QSettings`
 - 已支持本地 Videos 列表，下载索引持久化到 `QStandardPaths::AppDataLocation/downloaded_videos.json`
 - 已支持双击视频或点击 `Play Selected` 调用 Windows 默认播放器
+- 已接入输入区单图附件：
+  - 支持 `png` / `jpg` / `jpeg` / `webp`
+  - 选择后会显示缩略图、文件名和删除按钮
+  - 再次选择会覆盖上一张图片
+- 已接入客户端本地任务图片缓存：
+  - `%LOCALAPPDATA%/VideoGenProject/tasks/pending_<uuid>/input_image.<ext>`
+  - 服务端返回 `task_id` 后迁移到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/`
+  - 每个任务目录写入 `metadata.json`
+- `ApiClient` 已新增 `multipart/form-data` 的 `mode=i2v` 创建任务路径
+- `TaskSummary` / `TaskDetail` 已解析：
+  - `mode`
+  - `size`
+  - `input_image_path`
+  - `input_image_exists`
+- 左侧任务区已从表格改为卡片列表，`i2v` 卡片显示参考图缩略图和“图文生成”，`t2v` 卡片显示“文生视频”
 - 命令行 smoke test 默认等待窗口已提升到 60 分钟，并支持 `--smoke-timeout-ms`
 - 命令行 smoke test 已支持 `--smoke-task-id`，可以挂到已有任务上继续轮询，不会重复创建服务端任务
 - 命令行 smoke test 已支持 `--smoke-download-dir`，可验证终态成功后下载 mp4 到本地目录
+- 命令行 smoke test 已支持 `--smoke-image`，可与 `--smoke-prompt` 配合提交 `i2v`
 - Windows 原生编译已通过
 - Windows 原生启动已通过
 - Windows smoke test 已真实打到本地 FastAPI 服务
@@ -100,6 +116,32 @@
 ## 最近一次重要进展
 
 2026-04-24：
+
+- Windows Qt 客户端已接入图片 + prompt 的 `i2v` 提交入口：
+  - 聊天输入区新增 `+` 添加图片按钮
+  - 选择图片后显示预览块，可删除
+  - 本地校验覆盖：文件存在、扩展名、`QImageReader` 可读、最大 `20 MiB`
+  - 图片发送前复制到 `%LOCALAPPDATA%/VideoGenProject/tasks/pending_<uuid>/`
+  - `POST /api/tasks` 有图时使用 multipart：`mode=i2v`、`prompt`、`size`、`image`
+  - 无图时仍保持原 JSON `mode=t2v` 流程
+  - 服务端返回 `task_id` 后迁移缓存目录并写入 `metadata.json`
+  - 上传失败会清理 pending 图片缓存并展示服务端稳定错误码
+  - 左侧任务列表已改为卡片式展示，图文任务显示参考图缩略图和“图文生成”
+  - 新增 `--smoke-image`
+- Windows 原生客户端构建已重新通过：
+  - `cmake -S code\client\qt_wan_chat -B code\client\qt_wan_chat\build -G Ninja ...`
+  - `cmake --build code\client\qt_wan_chat\build --parallel`
+- 本轮 i2v smoke 真实结果：
+  - 本地测试图：`code/client/qt_wan_chat/build/smoke_assets/i2v_smoke.png`
+  - 命令：`qt_wan_chat.exe --smoke-prompt="i2v client smoke test" --smoke-image=... --smoke-timeout-ms=10000`
+  - 客户端已发起 multipart 请求，但当前正在运行的服务端进程返回：
+    - `HTTP 422`
+    - `code=validation_error`
+    - `body: Input should be a valid dictionary or object to extract fields from`
+  - 该现象说明当前运行中的服务端进程尚未加载本次拉取后的 multipart `i2v` 实现；本轮按用户要求没有启动、停止或重启服务端
+- 现有 T2V 任务 monitor smoke 仍通过：
+  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000`
+  - 返回 `status=succeeded`、`output_path` 与 `download_url`
 
 - WSL 服务端已补齐图片 + prompt 生成视频协议：
   - API `mode` 现支持 `t2v` / `i2v`

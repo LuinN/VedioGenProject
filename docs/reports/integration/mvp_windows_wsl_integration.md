@@ -87,6 +87,31 @@ Windows local result:
 - local metadata saved to `C:\Users\37545\AppData\Roaming\VideoGenProject\qt_wan_chat\downloaded_videos.json`
 - file size: `8060815` bytes
 
+Windows client i2v upload pass:
+
+```powershell
+qt_wan_chat.exe --smoke-prompt="i2v client smoke test" --smoke-image=D:\Projects\VideoGenProject\code\client\qt_wan_chat\build\smoke_assets\i2v_smoke.png --smoke-timeout-ms=10000
+```
+
+Observed output from the currently running service process:
+
+```text
+body: Input should be a valid dictionary or object to extract fields from [HTTP 422] [code=validation_error]
+```
+
+Client-side result:
+
+- Qt client builds with multipart `mode=i2v` support
+- image selection/cache path is `%LOCALAPPDATA%\VideoGenProject\tasks`
+- failed create-task upload clears the pending image cache
+- existing T2V monitor smoke still succeeds against task `18439c7f-d91b-42a4-a5f3-2e90624587f8`
+
+Current interpretation:
+
+- the checked-in service contract supports multipart `i2v`
+- the service process that was already running during this Windows pass still responds like the previous JSON-only implementation
+- this pass intentionally did not restart or modify the service process
+
 Current Windows-side caveat:
 
 - `\\wsl$` access from the current Windows agent session still returns Access denied

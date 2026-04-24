@@ -2,6 +2,9 @@
 
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFile>
+#include <QFileInfo>
+#include <QHttpMultiPart>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QSaveFile>
@@ -28,6 +31,21 @@ QString responseSnippet(const QByteArray &body)
         return text;
     }
     return text.left(240) + QStringLiteral("...");
+}
+
+QString mimeTypeForImagePath(const QString &path)
+{
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == QStringLiteral("png")) {
+        return QStringLiteral("image/png");
+    }
+    if (suffix == QStringLiteral("jpg") || suffix == QStringLiteral("jpeg")) {
+        return QStringLiteral("image/jpeg");
+    }
+    if (suffix == QStringLiteral("webp")) {
+        return QStringLiteral("image/webp");
+    }
+    return QStringLiteral("application/octet-stream");
 }
 
 } // namespace
@@ -107,6 +125,18 @@ void ApiClient::createTask(const QString &prompt, const QString &size)
             {QStringLiteral("prompt"), prompt},
             {QStringLiteral("size"), size},
         });
+}
+
+void ApiClient::createImageTask(const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId)
+{
+    if (!m_baseUrl.isValid()) {
+        emitInvalidBaseUrlFailure(RequestKind::CreateTask, QStringLiteral("Service base URL is not configured."));
+        return;
+    }
+
+    QUrl url = m_baseUrl;
+    url.setPath(QStringLiteral("/api/tasks"));
+    sendMultipartCreateTask(url, prompt, size, localImagePath, clientRequestId);
 }
 
 void ApiClient::fetchTask(const QString &taskId)
@@ -213,6 +243,68 @@ void ApiClient::sendPostRequest(RequestKind kind, const QUrl &url, const QJsonOb
     });
 }
 
+void ApiClient::sendMultipartCreateTask(const QUrl &url, const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId)
+{
+    const QString trimmedPath = localImagePath.trimmed();
+    QFile file(trimmedPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        const QString details = QStringLiteral("Failed to open image for upload: %1 | path=%2")
+                                    .arg(file.errorString(), trimmedPath);
+        emitLocalFailure(
+            RequestKind::CreateTask,
+            QStringLiteral("image_upload_open_failed"),
+            QStringLiteral("The selected image could not be opened for upload."),
+            details,
+            url,
+            clientRequestId);
+        return;
+    }
+    const QByteArray imageBody = file.readAll();
+    if (imageBody.isEmpty() && file.size() > 0) {
+        emitLocalFailure(
+            RequestKind::CreateTask,
+            QStringLiteral("image_upload_read_failed"),
+            QStringLiteral("The selected image could not be read for upload."),
+            QStringLiteral("Failed to read image bytes: %1 | path=%2").arg(file.errorString(), trimmedPath),
+            url,
+            clientRequestId);
+        return;
+    }
+
+    auto *multipart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+
+    auto appendTextPart = [multipart](const QString &name, const QString &value) {
+        QHttpPart part;
+        part.setHeader(QNetworkRequest::ContentDispositionHeader, QStringLiteral("form-data; name=\"%1\"").arg(name));
+        part.setBody(value.toUtf8());
+        multipart->append(part);
+    };
+
+    appendTextPart(QStringLiteral("mode"), QStringLiteral("i2v"));
+    appendTextPart(QStringLiteral("prompt"), prompt);
+    appendTextPart(QStringLiteral("size"), size);
+
+    QHttpPart imagePart;
+    QString fileName = QFileInfo(trimmedPath).fileName();
+    fileName.replace(QLatin1Char('"'), QLatin1Char('_'));
+    imagePart.setHeader(
+        QNetworkRequest::ContentDispositionHeader,
+        QStringLiteral("form-data; name=\"image\"; filename=\"%1\"").arg(fileName));
+    imagePart.setHeader(QNetworkRequest::ContentTypeHeader, mimeTypeForImagePath(trimmedPath));
+    imagePart.setBody(imageBody);
+    multipart->append(imagePart);
+
+    QNetworkRequest request(url);
+    request.setRawHeader("Accept", "application/json");
+
+    QNetworkReply *reply = m_network.post(request, multipart);
+    multipart->setParent(reply);
+    reply->setProperty("clientRequestId", clientRequestId.trimmed());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        handleReply(RequestKind::CreateTask, reply);
+    });
+}
+
 void ApiClient::handleReply(RequestKind kind, QNetworkReply *reply)
 {
     const QByteArray body = reply->readAll();
@@ -301,6 +393,7 @@ void ApiClient::handleReply(RequestKind kind, QNetworkReply *reply)
             emit requestFailed(buildParseFailure(kind, reply, body, error));
             break;
         }
+        task.clientRequestId = reply->property("clientRequestId").toString();
         emit taskCreated(task);
         break;
     }
@@ -347,11 +440,24 @@ void ApiClient::emitInvalidBaseUrlFailure(RequestKind kind, const QString &detai
     emit requestFailed(failure);
 }
 
+void ApiClient::emitLocalFailure(RequestKind kind, const QString &stableCode, const QString &userMessage, const QString &details, const QUrl &url, const QString &clientRequestId)
+{
+    RequestFailure failure;
+    failure.kind = kind;
+    failure.clientRequestId = clientRequestId;
+    failure.stableCode = stableCode;
+    failure.userMessage = userMessage;
+    failure.details = details;
+    failure.url = url;
+    emit requestFailed(failure);
+}
+
 RequestFailure ApiClient::buildNetworkFailure(RequestKind kind, QNetworkReply *reply, const QByteArray &body) const
 {
     RequestFailure failure;
     failure.kind = kind;
     failure.httpStatus = 0;
+    failure.clientRequestId = reply->property("clientRequestId").toString();
     failure.stableCode = QStringLiteral("network_error");
     failure.userMessage = QStringLiteral("Could not reach the local service. Check the URL and make sure FastAPI is running.");
     failure.details = reply->errorString();
@@ -365,6 +471,7 @@ RequestFailure ApiClient::buildHttpFailure(RequestKind kind, QNetworkReply *repl
     RequestFailure failure;
     failure.kind = kind;
     failure.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    failure.clientRequestId = reply->property("clientRequestId").toString();
     failure.rawBody = body;
     failure.url = reply->request().url();
 
@@ -397,6 +504,7 @@ RequestFailure ApiClient::buildParseFailure(RequestKind kind, QNetworkReply *rep
     RequestFailure failure;
     failure.kind = kind;
     failure.httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    failure.clientRequestId = reply->property("clientRequestId").toString();
     failure.stableCode = QStringLiteral("client_parse_error");
     failure.userMessage = QStringLiteral("The service returned malformed JSON for %1.")
                               .arg(requestKindName(kind));

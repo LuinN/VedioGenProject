@@ -19,6 +19,7 @@ enum class RequestKind {
 struct RequestFailure {
     RequestKind kind = RequestKind::HealthCheck;
     int httpStatus = 0;
+    QString clientRequestId;
     QString stableCode;
     QString userMessage;
     QString details;
@@ -47,6 +48,7 @@ public:
 
     void checkHealth();
     void createTask(const QString &prompt, const QString &size);
+    void createImageTask(const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId);
     void fetchTask(const QString &taskId);
     void fetchTasks(int limit);
     void fetchResults(int limit);
@@ -64,8 +66,10 @@ signals:
 private:
     void sendGetRequest(RequestKind kind, const QUrl &url);
     void sendPostRequest(RequestKind kind, const QUrl &url, const QJsonObject &payload);
+    void sendMultipartCreateTask(const QUrl &url, const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId);
     void handleReply(RequestKind kind, class QNetworkReply *reply);
     void emitInvalidBaseUrlFailure(RequestKind kind, const QString &details);
+    void emitLocalFailure(RequestKind kind, const QString &stableCode, const QString &userMessage, const QString &details, const QUrl &url = {}, const QString &clientRequestId = {});
     RequestFailure buildNetworkFailure(RequestKind kind, class QNetworkReply *reply, const QByteArray &body) const;
     RequestFailure buildHttpFailure(RequestKind kind, class QNetworkReply *reply, const QByteArray &body) const;
     RequestFailure buildParseFailure(RequestKind kind, class QNetworkReply *reply, const QByteArray &body, const QString &details) const;
