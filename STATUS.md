@@ -120,6 +120,14 @@
   - 支持 `png` / `jpg` / `jpeg` / `webp`
   - 选择后会显示缩略图、文件名和删除按钮
   - 再次选择会覆盖上一张图片
+- 已接入客户端模型 profile 选择：
+  - 启动时拉取 `GET /api/capabilities`
+  - Configuration 中新增 `Profile` 下拉
+  - 当前可见 profile：
+    - `Wan2.2 TI2V 5B`
+    - `Wan2.2 I2V A14B Low-VRAM`
+  - profile 下拉不再依赖“是否已附图”才可见
+  - 若选中仅支持 `i2v` 的 profile 但当前未附图，客户端会先在本地拦截并提示，而不会直接把错误请求发给服务端
 - 已接入客户端本地任务图片缓存：
   - `%LOCALAPPDATA%/VideoGenProject/tasks/pending_<uuid>/input_image.<ext>`
   - 服务端返回 `task_id` 后迁移到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/`

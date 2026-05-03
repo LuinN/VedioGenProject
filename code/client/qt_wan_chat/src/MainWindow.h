@@ -110,6 +110,7 @@ private slots:
     void deleteSelectedVideo();
 
     void onHealthChecked(const TaskModels::HealthResponse &health);
+    void onCapabilitiesFetched(const TaskModels::CapabilityListResponse &capabilities);
     void onTaskCreated(const TaskModels::TaskSummary &task);
     void onTaskFetched(const TaskModels::TaskDetail &task);
     void onTasksFetched(const TaskModels::TaskListResponse &tasks);
@@ -135,6 +136,14 @@ private:
     void setupHiddenResultsTable();
     void connectSignals();
     void applyVisualStyle();
+    void refreshProfileOptions();
+    void refreshSizeOptions(const QString &preferredProfileId = {});
+    QString selectedProfileId() const;
+    QString effectiveProfileIdForCurrentRequest() const;
+    QStringList allowedSizesForProfile(const QString &profileId) const;
+    QString defaultSizeForProfile(const QString &profileId) const;
+    QStringList supportedModesForProfile(const QString &profileId) const;
+    bool isProfileAvailable(const QString &profileId, QString *reason = nullptr) const;
 
     void appendChatMessage(const QString &role, const QString &message);
     QWidget *appendChatWidget(QWidget *widget, bool alignRight);
@@ -219,6 +228,7 @@ private:
     QString formatTimestamp(const QDateTime &dateTime, const QString &fallback) const;
 
     ApiClient m_apiClient;
+    QHash<QString, TaskModels::CapabilityProfile> m_capabilities;
     QHash<QString, TaskModels::TaskDetail> m_tasks;
     QHash<QString, TaskModels::ResultItem> m_results;
     QHash<QString, DownloadedVideo> m_downloadedVideos;
@@ -252,6 +262,7 @@ private:
     QDialog *m_videosDialog = nullptr;
     QDialog *m_diagnosticsDialog = nullptr;
     QLineEdit *m_serviceUrlEdit = nullptr;
+    QComboBox *m_profileCombo = nullptr;
     QComboBox *m_sizeCombo = nullptr;
     QLineEdit *m_wslDistroEdit = nullptr;
     QLineEdit *m_downloadDirectoryEdit = nullptr;

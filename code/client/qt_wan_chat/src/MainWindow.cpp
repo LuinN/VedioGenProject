@@ -37,7 +37,10 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSplitter>
+#include <QStandardItem>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QStringList>
@@ -56,8 +59,12 @@
 namespace {
 
 constexpr auto kDefaultServiceUrl = "http://127.0.0.1:8000";
-constexpr auto kDefaultSize = "1280*704";
-constexpr auto kAlternateSize = "704*1280";
+constexpr auto kLegacyDefaultSize = "1280*704";
+constexpr auto kLegacyAlternateSize = "704*1280";
+constexpr auto kComfyDefaultSize = "832*480";
+constexpr auto kComfyAlternateSize = "480*832";
+constexpr auto kLegacyProfileId = "wan22-ti2v-5b";
+constexpr auto kComfyProfileId = "wan22-i2v-14b-lowvram";
 constexpr auto kDefaultDistro = "Ubuntu-24.04";
 constexpr auto kDownloadDirectorySetting = "downloads/directory";
 constexpr auto kVideoIndexFileName = "downloaded_videos.json";
@@ -218,6 +225,14 @@ bool pathIsAtOrUnderDirectory(const QString &path, const QString &directory)
     return normalizedPath.startsWith(normalizedDirectory, Qt::CaseInsensitive);
 }
 
+QString fallbackProfileLabel(const QString &profileId)
+{
+    if (profileId == QString::fromLatin1(kComfyProfileId)) {
+        return QStringLiteral("Wan2.2 I2V A14B Low-VRAM");
+    }
+    return QStringLiteral("Wan2.2 TI2V 5B");
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -226,6 +241,8 @@ MainWindow::MainWindow(QWidget *parent)
     setupUi();
     loadPersistentState();
     connectSignals();
+    refreshProfileOptions();
+    refreshSizeOptions();
 
     QString error;
     if (!m_apiClient.setBaseUrlString(QString::fromLatin1(kDefaultServiceUrl), &error)) {
@@ -505,10 +522,14 @@ QWidget *MainWindow::buildConfigPanel()
     m_applyServiceUrlButton = new QPushButton(QStringLiteral("Apply URL"), panel);
     form->addRow(QString(), m_applyServiceUrlButton);
 
+    m_profileCombo = new QComboBox(panel);
+    m_profileCombo->setEditable(false);
+    form->addRow(QStringLiteral("Profile"), m_profileCombo);
+
     m_sizeCombo = new QComboBox(panel);
     m_sizeCombo->setEditable(true);
-    m_sizeCombo->addItems({QString::fromLatin1(kDefaultSize), QString::fromLatin1(kAlternateSize)});
-    m_sizeCombo->setCurrentText(QString::fromLatin1(kDefaultSize));
+    m_sizeCombo->addItems({QString::fromLatin1(kLegacyDefaultSize), QString::fromLatin1(kLegacyAlternateSize)});
+    m_sizeCombo->setCurrentText(QString::fromLatin1(kLegacyDefaultSize));
     form->addRow(QStringLiteral("Size"), m_sizeCombo);
 
     m_wslDistroEdit = new QLineEdit(QString::fromLatin1(kDefaultDistro), panel);
@@ -670,6 +691,12 @@ void MainWindow::connectSignals()
     connect(m_playVideoButton, &QPushButton::clicked, this, &MainWindow::playSelectedVideo);
     connect(m_deleteVideoButton, &QPushButton::clicked, this, &MainWindow::deleteSelectedVideo);
     connect(m_pollTimer, &QTimer::timeout, this, &MainWindow::pollActiveTasks);
+    connect(m_profileCombo, &QComboBox::currentTextChanged, this, [this]() {
+        if (m_profileCombo != nullptr) {
+            m_profileCombo->setToolTip(m_profileCombo->currentData(Qt::ToolTipRole).toString());
+        }
+        refreshSizeOptions(selectedProfileId());
+    });
     connect(m_tasksList, &QListWidget::itemSelectionChanged, this, [this]() {
         updateOutputDirectoryField();
         if (m_deleteTaskButton != nullptr) {
@@ -693,6 +720,7 @@ void MainWindow::connectSignals()
     connect(m_wslDistroEdit, &QLineEdit::textChanged, this, &MainWindow::updateOutputDirectoryField);
     connect(m_openOutputDirectoryButton, &QPushButton::clicked, this, &MainWindow::openSelectedOutputDirectory);
     connect(&m_apiClient, &ApiClient::healthChecked, this, &MainWindow::onHealthChecked);
+    connect(&m_apiClient, &ApiClient::capabilitiesFetched, this, &MainWindow::onCapabilitiesFetched);
     connect(&m_apiClient, &ApiClient::taskCreated, this, &MainWindow::onTaskCreated);
     connect(&m_apiClient, &ApiClient::taskFetched, this, &MainWindow::onTaskFetched);
     connect(&m_apiClient, &ApiClient::tasksFetched, this, &MainWindow::onTasksFetched);
@@ -964,6 +992,138 @@ QStatusBar {
 )"));
 }
 
+void MainWindow::refreshProfileOptions()
+{
+    if (m_profileCombo == nullptr) {
+        return;
+    }
+
+    const QString preservedProfileId = effectiveProfileIdForCurrentRequest();
+    const QList<QString> orderedProfileIds{
+        QString::fromLatin1(kLegacyProfileId),
+        QString::fromLatin1(kComfyProfileId),
+    };
+
+    QSignalBlocker blocker(m_profileCombo);
+    auto *model = new QStandardItemModel(m_profileCombo);
+    for (const QString &profileId : orderedProfileIds) {
+        const TaskModels::CapabilityProfile capability = m_capabilities.value(profileId);
+        const QString label = capability.label.isEmpty()
+            ? fallbackProfileLabel(profileId)
+            : capability.label;
+        auto *item = new QStandardItem(label);
+        item->setData(profileId, Qt::UserRole);
+        QString tooltip = capability.availabilityReason;
+        if (tooltip.isEmpty() && profileId == QString::fromLatin1(kComfyProfileId)) {
+            tooltip = QStringLiteral("This profile currently supports image-to-video only.");
+        }
+        item->setToolTip(tooltip);
+        const bool hasCapabilityInfo = !capability.id.isEmpty();
+        const bool enabled = profileId == QString::fromLatin1(kLegacyProfileId)
+            || !hasCapabilityInfo
+            || capability.available;
+        item->setEnabled(enabled);
+        model->appendRow(item);
+    }
+    m_profileCombo->setModel(model);
+
+    int targetIndex = 0;
+    for (int index = 0; index < m_profileCombo->count(); ++index) {
+        if (m_profileCombo->itemData(index, Qt::UserRole).toString() == preservedProfileId) {
+            targetIndex = index;
+            break;
+        }
+    }
+    m_profileCombo->setCurrentIndex(targetIndex);
+    m_profileCombo->setEnabled(true);
+    m_profileCombo->setToolTip(m_profileCombo->currentData(Qt::ToolTipRole).toString());
+}
+
+void MainWindow::refreshSizeOptions(const QString &preferredProfileId)
+{
+    if (m_sizeCombo == nullptr) {
+        return;
+    }
+
+    const QString profileId = preferredProfileId.isEmpty()
+        ? effectiveProfileIdForCurrentRequest()
+        : preferredProfileId;
+    const QStringList sizes = allowedSizesForProfile(profileId);
+    const QString desired = sizes.contains(m_sizeCombo->currentText().trimmed())
+        ? m_sizeCombo->currentText().trimmed()
+        : defaultSizeForProfile(profileId);
+
+    QSignalBlocker blocker(m_sizeCombo);
+    m_sizeCombo->clear();
+    m_sizeCombo->addItems(sizes);
+    const int index = qMax(0, m_sizeCombo->findText(desired));
+    m_sizeCombo->setCurrentIndex(index);
+}
+
+QString MainWindow::selectedProfileId() const
+{
+    if (m_profileCombo == nullptr || m_profileCombo->currentIndex() < 0) {
+        return QString::fromLatin1(kLegacyProfileId);
+    }
+    const QString profileId = m_profileCombo->currentData(Qt::UserRole).toString().trimmed();
+    return profileId.isEmpty() ? QString::fromLatin1(kLegacyProfileId) : profileId;
+}
+
+QString MainWindow::effectiveProfileIdForCurrentRequest() const
+{
+    return selectedProfileId();
+}
+
+QStringList MainWindow::allowedSizesForProfile(const QString &profileId) const
+{
+    const TaskModels::CapabilityProfile capability = m_capabilities.value(profileId);
+    if (!capability.sizes.isEmpty()) {
+        return capability.sizes;
+    }
+    if (profileId == QString::fromLatin1(kComfyProfileId)) {
+        return {QString::fromLatin1(kComfyDefaultSize), QString::fromLatin1(kComfyAlternateSize)};
+    }
+    return {QString::fromLatin1(kLegacyDefaultSize), QString::fromLatin1(kLegacyAlternateSize)};
+}
+
+QString MainWindow::defaultSizeForProfile(const QString &profileId) const
+{
+    const TaskModels::CapabilityProfile capability = m_capabilities.value(profileId);
+    if (!capability.defaultSize.trimmed().isEmpty()) {
+        return capability.defaultSize.trimmed();
+    }
+    return profileId == QString::fromLatin1(kComfyProfileId)
+        ? QString::fromLatin1(kComfyDefaultSize)
+        : QString::fromLatin1(kLegacyDefaultSize);
+}
+
+QStringList MainWindow::supportedModesForProfile(const QString &profileId) const
+{
+    const TaskModels::CapabilityProfile capability = m_capabilities.value(profileId);
+    if (!capability.modes.isEmpty()) {
+        return capability.modes;
+    }
+    if (profileId == QString::fromLatin1(kComfyProfileId)) {
+        return {QStringLiteral("i2v")};
+    }
+    return {QStringLiteral("t2v"), QStringLiteral("i2v")};
+}
+
+bool MainWindow::isProfileAvailable(const QString &profileId, QString *reason) const
+{
+    const TaskModels::CapabilityProfile capability = m_capabilities.value(profileId);
+    if (capability.id.isEmpty()) {
+        if (reason != nullptr) {
+            reason->clear();
+        }
+        return profileId == QString::fromLatin1(kLegacyProfileId);
+    }
+    if (reason != nullptr) {
+        *reason = capability.availabilityReason;
+    }
+    return capability.available;
+}
+
 void MainWindow::applyServiceUrl()
 {
     QString error;
@@ -992,16 +1152,43 @@ void MainWindow::sendPrompt()
         return;
     }
 
+    const QString profileId = effectiveProfileIdForCurrentRequest();
     const QString size = m_sizeCombo->currentText().trimmed();
-    if (size != QString::fromLatin1(kDefaultSize) && size != QString::fromLatin1(kAlternateSize)) {
-        const QString message = QStringLiteral("Size must be 1280*704 or 704*1280.");
+    const bool hasInputImage = !m_currentInputImage.cachedPath.trimmed().isEmpty();
+    QString availabilityReason;
+    if (!isProfileAvailable(profileId, &availabilityReason)) {
+        const QString message = availabilityReason.isEmpty()
+            ? QStringLiteral("The selected profile is currently unavailable.")
+            : availabilityReason;
         appendDiagnostic(message);
         appendChatMessage(QStringLiteral("System"), message);
         showUserNotice(message);
         return;
     }
 
-    const bool hasInputImage = !m_currentInputImage.cachedPath.trimmed().isEmpty();
+    const QString requestedMode = hasInputImage ? QStringLiteral("i2v") : QStringLiteral("t2v");
+    const QStringList supportedModes = supportedModesForProfile(profileId);
+    if (!supportedModes.contains(requestedMode)) {
+        const QString message = requestedMode == QStringLiteral("t2v")
+            ? QStringLiteral("The selected profile only supports image-to-video. Attach an image or switch to Wan2.2 TI2V 5B.")
+            : QStringLiteral("The selected profile does not support the current request mode.");
+        appendDiagnostic(QStringLiteral("%1 profile=%2 supported_modes=%3")
+                             .arg(message, profileId, supportedModes.join(QStringLiteral(","))));
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        return;
+    }
+
+    const QStringList allowedSizes = allowedSizesForProfile(profileId);
+    if (!allowedSizes.contains(size)) {
+        const QString message = QStringLiteral("Size must match the selected profile: %1.")
+                                    .arg(allowedSizes.join(QStringLiteral(", ")));
+        appendDiagnostic(message);
+        appendChatMessage(QStringLiteral("System"), message);
+        showUserNotice(message);
+        return;
+    }
+
     if (hasInputImage && !QFileInfo::exists(m_currentInputImage.cachedPath)) {
         const QString message = QStringLiteral("Cached input image is missing: %1").arg(m_currentInputImage.cachedPath);
         appendDiagnostic(message);
@@ -1020,14 +1207,16 @@ void MainWindow::sendPrompt()
     if (hasInputImage) {
         const InputImageAttachment attachment = m_currentInputImage;
         m_pendingImageRequests.insert(attachment.clientRequestId, attachment);
-        appendDiagnostic(QStringLiteral("Submitting i2v task with size=%1 image=%2 to %3")
-                             .arg(size, attachment.cachedPath, m_apiClient.baseUrl().toString()));
-        m_apiClient.createImageTask(prompt, size, attachment.cachedPath, attachment.clientRequestId);
+        appendDiagnostic(QStringLiteral("Submitting i2v task profile=%1 size=%2 image=%3 to %4")
+                             .arg(profileId, size, attachment.cachedPath, m_apiClient.baseUrl().toString()));
+        m_apiClient.createImageTask(prompt, size, attachment.cachedPath, profileId, attachment.clientRequestId);
         clearCurrentInputImage(false);
+        refreshProfileOptions();
+        refreshSizeOptions(profileId);
     } else {
-        appendDiagnostic(QStringLiteral("Submitting t2v task with size=%1 to %2")
-                             .arg(size, m_apiClient.baseUrl().toString()));
-        m_apiClient.createTask(prompt, size);
+        appendDiagnostic(QStringLiteral("Submitting t2v task profile=%1 size=%2 to %3")
+                             .arg(profileId, size, m_apiClient.baseUrl().toString()));
+        m_apiClient.createTask(prompt, size, profileId);
     }
     m_promptEdit->clear();
 }
@@ -1035,6 +1224,7 @@ void MainWindow::sendPrompt()
 void MainWindow::refreshInitialData()
 {
     m_apiClient.checkHealth();
+    m_apiClient.fetchCapabilities();
     m_apiClient.fetchTasks(kListLimit);
     m_apiClient.fetchResults(kListLimit);
 }
@@ -1135,12 +1325,16 @@ void MainWindow::chooseInputImage()
 
     appendDiagnostic(QStringLiteral("Input image selected: %1 -> %2")
                          .arg(filePath, m_currentInputImage.cachedPath));
+    refreshProfileOptions();
+    refreshSizeOptions(selectedProfileId());
     showUserNotice(QStringLiteral("Input image attached."));
 }
 
 void MainWindow::removeInputImage()
 {
     clearCurrentInputImage(true);
+    refreshProfileOptions();
+    refreshSizeOptions(selectedProfileId());
     appendDiagnostic(QStringLiteral("Input image removed."));
     showUserNotice(QStringLiteral("Input image removed."));
 }
@@ -1348,6 +1542,33 @@ void MainWindow::onHealthChecked(const TaskModels::HealthResponse &health)
                                 .arg(health.service, m_apiClient.baseUrl().toString());
     appendDiagnostic(message);
     showUserNotice(QStringLiteral("Health check passed."));
+}
+
+void MainWindow::onCapabilitiesFetched(const TaskModels::CapabilityListResponse &capabilities)
+{
+    m_capabilities.clear();
+    for (const TaskModels::CapabilityProfile &capability : capabilities.items) {
+        m_capabilities.insert(capability.id, capability);
+    }
+    refreshProfileOptions();
+    refreshSizeOptions(selectedProfileId());
+
+    QStringList lines;
+    for (const TaskModels::CapabilityProfile &capability : capabilities.items) {
+        lines.append(
+            QStringLiteral("%1 [%2] sizes=%3 available=%4%5")
+                .arg(
+                    capability.label,
+                    capability.id,
+                    capability.sizes.join(QStringLiteral("/")),
+                    capability.available ? QStringLiteral("true") : QStringLiteral("false"),
+                    capability.availabilityReason.isEmpty()
+                        ? QString()
+                        : QStringLiteral(" reason=%1").arg(capability.availabilityReason)));
+    }
+    appendDiagnostic(QStringLiteral("Loaded %1 profile capability item(s): %2")
+                         .arg(capabilities.items.size())
+                         .arg(lines.join(QStringLiteral(" | "))));
 }
 
 void MainWindow::onTaskCreated(const TaskModels::TaskSummary &task)

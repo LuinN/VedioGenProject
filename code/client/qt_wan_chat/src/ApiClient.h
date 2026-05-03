@@ -9,6 +9,7 @@
 
 enum class RequestKind {
     HealthCheck,
+    FetchCapabilities,
     CreateTask,
     FetchTask,
     FetchTasks,
@@ -51,8 +52,9 @@ public:
     QUrl baseUrl() const;
 
     void checkHealth();
-    void createTask(const QString &prompt, const QString &size);
-    void createImageTask(const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId);
+    void fetchCapabilities();
+    void createTask(const QString &prompt, const QString &size, const QString &profile = {});
+    void createImageTask(const QString &prompt, const QString &size, const QString &localImagePath, const QString &profile, const QString &clientRequestId);
     void fetchTask(const QString &taskId);
     void fetchTasks(int limit);
     void deleteTask(const QString &taskId);
@@ -61,6 +63,7 @@ public:
 
 signals:
     void healthChecked(const TaskModels::HealthResponse &health);
+    void capabilitiesFetched(const TaskModels::CapabilityListResponse &capabilities);
     void taskCreated(const TaskModels::TaskSummary &task);
     void taskFetched(const TaskModels::TaskDetail &task);
     void tasksFetched(const TaskModels::TaskListResponse &tasks);
@@ -73,7 +76,7 @@ private:
     void sendGetRequest(RequestKind kind, const QUrl &url);
     void sendPostRequest(RequestKind kind, const QUrl &url, const QJsonObject &payload);
     void sendDeleteRequest(RequestKind kind, const QUrl &url, const QString &taskId);
-    void sendMultipartCreateTask(const QUrl &url, const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId);
+    void sendMultipartCreateTask(const QUrl &url, const QString &prompt, const QString &size, const QString &localImagePath, const QString &profile, const QString &clientRequestId);
     void handleReply(RequestKind kind, class QNetworkReply *reply);
     void emitInvalidBaseUrlFailure(RequestKind kind, const QString &details);
     void emitLocalFailure(RequestKind kind, const QString &stableCode, const QString &userMessage, const QString &details, const QUrl &url = {}, const QString &clientRequestId = {});
