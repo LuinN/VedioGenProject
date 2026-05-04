@@ -1,5 +1,6 @@
 .env
 .venv/
+.comfyui-venv/
 __pycache__/
 .pytest_cache/
 *.pyc
@@ -9,5 +10,7 @@ outputs/*
 !outputs/.gitkeep
 storage/*
 !storage/.gitkeep
+third_party/ComfyUI/
 third_party/Wan2.2/
 third_party/Wan2.2-TI2V-5B/
+third_party/flash-attn-2.8.3-src/

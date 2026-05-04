@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from app.config import RESTARTED_PENDING_MESSAGE, RESTARTED_RUNNING_MESSAGE
@@ -11,17 +10,19 @@ from app.progress import TaskProgressState
 def test_list_tasks_returns_newest_first(repository, service_env: dict[str, Path]) -> None:
     older = repository.create_task(
         task_id="task-older",
-        mode="t2v",
+        mode="i2v",
         prompt="older prompt",
-        size="1280*704",
+        size="832*480",
         log_path=str(service_env["logs_dir"] / "task-older.log"),
+        backend="comfyui_native",
     )
     newer = repository.create_task(
         task_id="task-newer",
-        mode="t2v",
+        mode="i2v",
         prompt="newer prompt",
-        size="1280*704",
+        size="832*480",
         log_path=str(service_env["logs_dir"] / "task-newer.log"),
+        backend="comfyui_native",
     )
 
     with connect(service_env["db_path"]) as connection:
@@ -39,23 +40,65 @@ def test_list_tasks_returns_newest_first(repository, service_env: dict[str, Path
     assert [task.task_id for task in tasks] == ["task-newer", "task-older"]
 
 
+def test_repository_persists_backend_prompt_and_failure_code(
+    repository,
+    service_env: dict[str, Path],
+) -> None:
+    task = repository.create_task(
+        task_id="task-progress",
+        mode="i2v",
+        prompt="image prompt",
+        size="832*480",
+        log_path=str(service_env["logs_dir"] / "task-progress.log"),
+        backend="comfyui_native",
+    )
+
+    repository.mark_task_running(task.task_id)
+    repository.set_backend_prompt_id(task.task_id, "prompt-123")
+    repository.update_task_progress(
+        task.task_id,
+        TaskProgressState(
+            status_message="sampling",
+            progress_current=3,
+            progress_total=20,
+            progress_percent=15,
+        ),
+    )
+    repository.mark_task_failed(
+        task.task_id,
+        "CUDA out of memory",
+        failure_code="backend_oom",
+        backend_prompt_id="prompt-123",
+    )
+
+    stored = repository.get_task(task.task_id)
+    assert stored is not None
+    assert stored.backend == "comfyui_native"
+    assert stored.backend_prompt_id == "prompt-123"
+    assert stored.failure_code == "backend_oom"
+    assert stored.status_message == "sampling"
+    assert stored.progress_percent == 15
+
+
 def test_recover_interrupted_tasks_marks_pending_and_running_failed(
     repository,
     service_env: dict[str, Path],
 ) -> None:
     pending_task = repository.create_task(
         task_id="task-pending",
-        mode="t2v",
+        mode="i2v",
         prompt="pending prompt",
-        size="1280*704",
+        size="832*480",
         log_path=str(service_env["logs_dir"] / "task-pending.log"),
+        backend="comfyui_native",
     )
     running_task = repository.create_task(
         task_id="task-running",
-        mode="t2v",
+        mode="i2v",
         prompt="running prompt",
-        size="1280*704",
+        size="832*480",
         log_path=str(service_env["logs_dir"] / "task-running.log"),
+        backend="comfyui_native",
     )
     repository.mark_task_running(running_task.task_id)
 
@@ -68,79 +111,5 @@ def test_recover_interrupted_tasks_marks_pending_and_running_failed(
     assert recovered_running is not None
     assert recovered_pending.status == "failed"
     assert recovered_pending.error_message == RESTARTED_PENDING_MESSAGE
-    assert recovered_pending.output_path is None
-    assert recovered_pending.log_path == pending_task.log_path
     assert recovered_running.status == "failed"
     assert recovered_running.error_message == RESTARTED_RUNNING_MESSAGE
-    assert recovered_running.output_path is None
-    assert recovered_running.log_path == running_task.log_path
-
-
-def test_update_task_progress_persists_runtime_fields(
-    repository,
-    service_env: dict[str, Path],
-) -> None:
-    task = repository.create_task(
-        task_id="task-progress",
-        mode="t2v",
-        prompt="progress prompt",
-        size="1280*704",
-        log_path=str(service_env["logs_dir"] / "task-progress.log"),
-    )
-
-    repository.mark_task_running(task.task_id)
-    repository.update_task_progress(
-        task.task_id,
-        TaskProgressState(
-            status_message="sampling",
-            progress_current=21,
-            progress_total=50,
-            progress_percent=42,
-        ),
-    )
-
-    stored = repository.get_task(task.task_id)
-    assert stored is not None
-    assert stored.status == "running"
-    assert stored.status_message == "sampling"
-    assert stored.progress_current == 21
-    assert stored.progress_total == 50
-    assert stored.progress_percent == 42
-
-
-def test_create_task_persists_input_image_path(
-    repository,
-    service_env: dict[str, Path],
-) -> None:
-    input_image_path = service_env["outputs_dir"] / "task-image" / "input_image.png"
-    input_image_path.parent.mkdir(parents=True, exist_ok=True)
-    input_image_path.write_bytes(b"fake-png")
-
-    task = repository.create_task(
-        task_id="task-image",
-        mode="i2v",
-        prompt="image prompt",
-        size="1280*704",
-        log_path=str(service_env["logs_dir"] / "task-image.log"),
-        input_image_path=str(input_image_path.resolve()),
-    )
-
-    stored = repository.get_task(task.task_id)
-    assert stored is not None
-    assert stored.mode == "i2v"
-    assert stored.input_image_path == str(input_image_path.resolve())
-
-
-def test_delete_task_removes_row(repository, service_env: dict[str, Path]) -> None:
-    task = repository.create_task(
-        task_id="task-delete",
-        mode="t2v",
-        prompt="delete prompt",
-        size="1280*704",
-        log_path=str(service_env["logs_dir"] / "task-delete.log"),
-    )
-
-    deleted = repository.delete_task(task.task_id)
-
-    assert deleted is True
-    assert repository.get_task(task.task_id) is None

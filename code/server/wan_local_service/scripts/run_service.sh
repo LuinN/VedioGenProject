@@ -55,7 +55,6 @@ WAN_THIRD_PARTY_DIR="$(resolve_service_path "${WAN_THIRD_PARTY_DIR:-third_party}
 SERVICE_PID_FILE="$(resolve_service_path "${WAN_SERVICE_PID_FILE:-storage/service.pid}")"
 SERVICE_LOG_FILE="$(resolve_service_path "${WAN_SERVICE_STDOUT_LOG:-logs/service.log}")"
 HEALTHCHECK_URL="http://127.0.0.1:${PORT}/healthz"
-SKIP_HEALTHCHECK="${WAN_SERVICE_SKIP_HEALTHCHECK:-0}"
 
 mkdir -p \
   "${WAN_STORAGE_DIR}" \
@@ -76,15 +75,13 @@ validate_service_runtime() {
   if ! python_command_exists "${PYTHON_BIN}"; then
     echo "[error] Service Python not found: ${PYTHON_BIN}" >&2
     echo "[hint] Run: cd ${SERVICE_ROOT} && bash scripts/setup_wan22.sh" >&2
-    echo "[hint] Check details with: cd ${SERVICE_ROOT} && bash scripts/check_env.sh" >&2
     return 1
   fi
 
   if ! PYTHONPATH="${SERVICE_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
-    "${PYTHON_BIN}" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
+    "${PYTHON_BIN}" -c "import fastapi, uvicorn, httpx, websocket, multipart" >/dev/null 2>&1; then
     echo "[error] Service runtime dependencies are missing in ${PYTHON_BIN}" >&2
     echo "[hint] Run: cd ${SERVICE_ROOT} && bash scripts/setup_wan22.sh" >&2
-    echo "[hint] Check details with: cd ${SERVICE_ROOT} && bash scripts/check_env.sh --require service" >&2
     return 1
   fi
 }
@@ -118,10 +115,6 @@ service_is_running() {
 }
 
 wait_for_healthcheck() {
-  if [[ "${SKIP_HEALTHCHECK}" == "1" ]]; then
-    return 0
-  fi
-
   if ! command -v curl >/dev/null 2>&1; then
     return 0
   fi
@@ -137,8 +130,13 @@ wait_for_healthcheck() {
   return 1
 }
 
+ensure_comfyui_running() {
+  bash "${SERVICE_ROOT}/scripts/run_comfyui.sh" start
+}
+
 start_background_service() {
   validate_service_runtime || return 1
+  ensure_comfyui_running || return 1
 
   if service_is_running; then
     local running_pid
@@ -208,10 +206,10 @@ stop_background_service() {
   kill -9 "${pid}" 2>/dev/null || true
   rm -f "${SERVICE_PID_FILE}"
   echo "[run] Service was force-stopped"
-  return 0
 }
 
 show_status() {
+  bash "${SERVICE_ROOT}/scripts/run_comfyui.sh" status || true
   if service_is_running; then
     local pid
     pid="$(read_pid)"
@@ -228,6 +226,7 @@ show_status() {
 case "${COMMAND}" in
   foreground)
     validate_service_runtime
+    ensure_comfyui_running
     cd "${SERVICE_ROOT}"
     echo "[run] Starting ${HOST}:${PORT}"
     echo "[run] OpenAPI docs: http://127.0.0.1:${PORT}/docs"

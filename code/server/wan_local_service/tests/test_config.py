@@ -6,38 +6,34 @@ from pathlib import Path
 from app.config import load_settings
 
 
-def test_load_settings_prefers_running_interpreter_for_inference(
+def test_load_settings_uses_comfyui_14b_defaults(
+    service_env: dict[str, Path],
+) -> None:
+    settings = load_settings()
+
+    assert settings.allowed_sizes == ("832*480", "480*832")
+    assert settings.default_size == "832*480"
+    assert settings.video_length == 49
+    assert settings.video_fps == 16
+    assert settings.comfyui_workflow_template.name == "wan22_i2v_a14b_lowvram_template.json"
+    assert settings.comfyui_required_model_paths
+    assert all(path.is_absolute() for path in settings.comfyui_required_model_paths)
+    assert settings.service_python_bin == sys.executable
+    assert settings.comfyui_python_bin == sys.executable
+
+
+def test_load_settings_can_override_comfyui_network_settings(
     service_env: dict[str, Path],
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("WAN_PYTHON_BIN", "/tmp/incorrect-global-python")
+    monkeypatch.setenv("WAN_COMFYUI_HOST", "0.0.0.0")
+    monkeypatch.setenv("WAN_COMFYUI_PORT", "9001")
+    monkeypatch.setenv("WAN_VIDEO_LENGTH", "65")
+    monkeypatch.setenv("WAN_VIDEO_FPS", "24")
 
     settings = load_settings()
 
-    assert settings.python_bin == sys.executable
-
-
-def test_load_settings_uses_conservative_defaults_for_low_memory_profile(
-    service_env: dict[str, Path],
-) -> None:
-    settings = load_settings()
-
-    assert settings.low_memory_profile is False
-    assert settings.frame_num is None
-    assert settings.sample_steps is None
-    assert settings.runtime_memory_guard_enabled is False
-
-
-def test_load_settings_can_enable_low_memory_profile(
-    service_env: dict[str, Path],
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("WAN_LOW_MEMORY_PROFILE", "1")
-    monkeypatch.setenv("WAN_ENFORCE_RUNTIME_MEMORY_GUARD", "1")
-
-    settings = load_settings()
-
-    assert settings.low_memory_profile is True
-    assert settings.frame_num == 17
-    assert settings.sample_steps == 20
-    assert settings.runtime_memory_guard_enabled is True
+    assert settings.comfyui_host == "0.0.0.0"
+    assert settings.comfyui_port == 9001
+    assert settings.video_length == 65
+    assert settings.video_fps == 24

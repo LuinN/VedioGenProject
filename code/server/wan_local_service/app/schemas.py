@@ -17,6 +17,10 @@ class ErrorResponse(BaseModel):
 class HealthResponse(BaseModel):
     ok: bool
     service: str
+    backend: Optional[str] = None
+    backend_ready: Optional[bool] = None
+    model_ready: Optional[bool] = None
+    backend_reason: Optional[str] = None
 
 
 class TaskCreateRequest(BaseModel):
@@ -44,6 +48,9 @@ class TaskResponseBase(BaseModel):
     output_path: Optional[str] = None
     input_image_path: Optional[str] = None
     error_message: Optional[str] = None
+    backend: Optional[str] = None
+    backend_prompt_id: Optional[str] = None
+    failure_code: Optional[str] = None
     log_path: str
     create_time: str
     update_time: str
@@ -69,6 +76,9 @@ class TaskProgressResponse(BaseModel):
     update_time: str
     output_exists: bool
     error_message: Optional[str] = None
+    backend: Optional[str] = None
+    backend_prompt_id: Optional[str] = None
+    failure_code: Optional[str] = None
     status_message: Optional[str] = None
     progress_current: Optional[int] = None
     progress_total: Optional[int] = None

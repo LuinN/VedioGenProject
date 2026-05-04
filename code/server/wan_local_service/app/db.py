@@ -43,6 +43,9 @@ def init_db(db_path: Path) -> None:
                 output_path TEXT NULL,
                 input_image_path TEXT NULL,
                 error_message TEXT NULL,
+                backend TEXT NULL,
+                backend_prompt_id TEXT NULL,
+                failure_code TEXT NULL,
                 log_path TEXT NOT NULL,
                 status_message TEXT NULL,
                 progress_current INTEGER NULL,
@@ -52,6 +55,9 @@ def init_db(db_path: Path) -> None:
             """
         )
         _ensure_column(connection, "tasks", "input_image_path", "TEXT NULL")
+        _ensure_column(connection, "tasks", "backend", "TEXT NULL")
+        _ensure_column(connection, "tasks", "backend_prompt_id", "TEXT NULL")
+        _ensure_column(connection, "tasks", "failure_code", "TEXT NULL")
         _ensure_column(connection, "tasks", "status_message", "TEXT NULL")
         _ensure_column(connection, "tasks", "progress_current", "INTEGER NULL")
         _ensure_column(connection, "tasks", "progress_total", "INTEGER NULL")

@@ -8,9 +8,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+from urllib.error import URLError
+from urllib.request import urlopen
 
-
-DEFAULT_RUNTIME_PYTHON = ".venv/bin/python"
+from .config import load_settings
 
 
 @dataclass(slots=True)
@@ -32,42 +33,19 @@ class CheckResult:
 @dataclass(slots=True)
 class EnvironmentReport:
     service_root: Path
-    configured_python: str
-    configured_python_resolved: str | None
     service_ready: bool
-    inference_ready: bool
-    flash_attn_build_enabled: bool
-    flash_attn_build_ready: bool
+    backend_ready: bool
+    model_ready: bool
     checks: list[CheckResult]
 
     def to_dict(self) -> dict[str, object]:
         return {
             "service_root": str(self.service_root),
-            "configured_python": self.configured_python,
-            "configured_python_resolved": self.configured_python_resolved,
             "service_ready": self.service_ready,
-            "inference_ready": self.inference_ready,
-            "flash_attn_build_enabled": self.flash_attn_build_enabled,
-            "flash_attn_build_ready": self.flash_attn_build_ready,
+            "backend_ready": self.backend_ready,
+            "model_ready": self.model_ready,
             "checks": [item.to_dict() for item in self.checks],
         }
-
-
-def _resolve_path(base_dir: Path, raw_value: str | None, default_value: Path) -> Path:
-    candidate = Path(raw_value) if raw_value else default_value
-    if not candidate.is_absolute():
-        candidate = base_dir / candidate
-    return candidate.resolve()
-
-
-def _resolve_exec_or_path(base_dir: Path, raw_value: str | None, default_value: str) -> str:
-    candidate = raw_value or default_value
-    if "/" not in candidate:
-        return candidate
-    path = Path(candidate)
-    if not path.is_absolute():
-        path = (base_dir / path).resolve()
-    return str(path)
 
 
 def _resolve_command(raw_value: str) -> str | None:
@@ -77,29 +55,6 @@ def _resolve_command(raw_value: str) -> str | None:
             return str(path)
         return None
     return shutil.which(raw_value)
-
-
-def _resolve_service_python(base_dir: Path) -> str:
-    explicit_service_python = os.getenv("WAN_SERVICE_PYTHON_BIN")
-    if explicit_service_python:
-        return _resolve_exec_or_path(base_dir, explicit_service_python, DEFAULT_RUNTIME_PYTHON)
-
-    default_venv_python = base_dir / DEFAULT_RUNTIME_PYTHON
-    if default_venv_python.is_file() and os.access(default_venv_python, os.X_OK):
-        return str(default_venv_python)
-
-    return _resolve_exec_or_path(
-        base_dir,
-        os.getenv("WAN_PYTHON_BIN"),
-        DEFAULT_RUNTIME_PYTHON,
-    )
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _run_command(command: Sequence[str]) -> tuple[bool, str]:
@@ -121,9 +76,7 @@ def _run_command(command: Sequence[str]) -> tuple[bool, str]:
     ).strip()
     if completed.returncode == 0:
         return True, output or "ok"
-    if output:
-        return False, output
-    return False, f"exit code {completed.returncode}"
+    return False, output or f"exit code {completed.returncode}"
 
 
 def _python_import_results(
@@ -131,7 +84,7 @@ def _python_import_results(
     modules: Sequence[str],
 ) -> dict[str, tuple[bool, str]]:
     if python_bin is None:
-        return {module: (False, "configured runtime python is not available") for module in modules}
+        return {module: (False, "python executable not available") for module in modules}
 
     script = """
 import importlib
@@ -144,13 +97,7 @@ for module_name in sys.argv[1:]:
         importlib.import_module(module_name)
         results.append({"module": module_name, "ok": True, "detail": "ok"})
     except Exception as exc:
-        results.append(
-            {
-                "module": module_name,
-                "ok": False,
-                "detail": f"{type(exc).__name__}: {exc}",
-            }
-        )
+        results.append({"module": module_name, "ok": False, "detail": f"{type(exc).__name__}: {exc}"})
 print(json.dumps(results))
 """
     try:
@@ -159,7 +106,7 @@ print(json.dumps(results))
             check=False,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
     except FileNotFoundError:
         return {module: (False, "command not found") for module in modules}
@@ -171,46 +118,25 @@ print(json.dumps(results))
     if completed.returncode != 0:
         detail = stderr or stdout or f"exit code {completed.returncode}"
         return {module: (False, detail) for module in modules}
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError:
-        detail = stderr or f"unexpected stdout: {stdout}"
-        return {module: (False, detail) for module in modules}
 
-    results: dict[str, tuple[bool, str]] = {}
-    for item in payload:
-        module_name = str(item["module"])
-        results[module_name] = (bool(item["ok"]), str(item["detail"]))
-    return results
+    payload = json.loads(stdout)
+    return {
+        str(item["module"]): (bool(item["ok"]), str(item["detail"]))
+        for item in payload
+    }
 
 
 def _torch_cuda_status(python_bin: str | None) -> tuple[bool, str]:
     if python_bin is None:
-        return False, "configured runtime python is not available"
+        return False, "python executable not available"
 
     script = """
 import json
-
-payload = {}
-try:
-    import torch
-except Exception as exc:
-    payload = {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
-else:
-    try:
-        cuda_available = bool(torch.cuda.is_available())
-        payload = {
-            "ok": cuda_available,
-            "detail": (
-                f"torch={torch.__version__}, torch_cuda={torch.version.cuda}, "
-                f"cuda_available={cuda_available}"
-            ),
-        }
-    except Exception as exc:
-        payload = {
-            "ok": False,
-            "detail": f"{type(exc).__name__}: {exc}",
-        }
+import torch
+payload = {
+    "ok": bool(torch.cuda.is_available()),
+    "detail": f"torch={torch.__version__}, torch_cuda={torch.version.cuda}, cuda_available={bool(torch.cuda.is_available())}",
+}
 print(json.dumps(payload))
 """
     try:
@@ -219,279 +145,196 @@ print(json.dumps(payload))
             check=False,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
     except FileNotFoundError:
         return False, "command not found"
-    except Exception as exc:  # pragma: no cover - defensive path
+    except Exception as exc:  # pragma: no cover
         return False, f"{type(exc).__name__}: {exc}"
 
     stdout = completed.stdout.strip()
     stderr = completed.stderr.strip()
     if completed.returncode != 0:
         return False, stderr or stdout or f"exit code {completed.returncode}"
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError:
-        return False, stderr or f"unexpected stdout: {stdout}"
+    payload = json.loads(stdout)
     return bool(payload["ok"]), str(payload["detail"])
 
 
-def collect_environment_report() -> EnvironmentReport:
-    service_root = Path(__file__).resolve().parents[1]
-    configured_python = _resolve_service_python(service_root)
-    configured_python_resolved = _resolve_command(configured_python)
-    allow_sdpa_fallback = _env_bool("WAN_ALLOW_SDPA_FALLBACK", True)
-    flash_attn_build_enabled = _env_bool("WAN_ENABLE_FLASH_ATTN_BUILD", False)
+def _http_json_ok(url: str, timeout_seconds: float) -> tuple[bool, str]:
+    try:
+        with urlopen(url, timeout=timeout_seconds) as response:
+            body = response.read().decode("utf-8", errors="replace").strip()
+            if response.status != 200:
+                return False, f"HTTP {response.status}: {body}"
+            return True, body or "ok"
+    except URLError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    except Exception as exc:  # pragma: no cover
+        return False, f"{type(exc).__name__}: {exc}"
 
-    wan_repo_dir = _resolve_path(
-        service_root,
-        os.getenv("WAN_REPO_DIR"),
-        Path("third_party/Wan2.2"),
+
+def collect_environment_report() -> EnvironmentReport:
+    settings = load_settings()
+    service_python_resolved = _resolve_command(settings.service_python_bin)
+    comfyui_python_resolved = _resolve_command(settings.comfyui_python_bin)
+
+    service_imports = _python_import_results(
+        service_python_resolved,
+        ("fastapi", "uvicorn", "multipart", "httpx", "websocket"),
     )
-    wan_model_dir = _resolve_path(
-        service_root,
-        os.getenv("WAN_MODEL_DIR"),
-        Path("third_party/Wan2.2-TI2V-5B"),
+    comfyui_imports = _python_import_results(
+        comfyui_python_resolved,
+        ("torch", "aiohttp", "PIL"),
     )
-    wan_generate_py = _resolve_path(
-        service_root,
-        os.getenv("WAN_GENERATE_PY"),
-        Path("third_party/Wan2.2/generate.py"),
+    torch_cuda_ok, torch_cuda_detail = _torch_cuda_status(comfyui_python_resolved)
+    object_info_ok, object_info_detail = _http_json_ok(
+        f"{settings.comfyui_base_url}/object_info",
+        settings.comfyui_health_timeout_seconds,
     )
-    default_venv_dir = service_root / ".venv"
 
     checks: list[CheckResult] = [
         CheckResult(
-            name="configured_python",
-            ok=configured_python_resolved is not None,
-            detail=(
-                configured_python_resolved
-                if configured_python_resolved is not None
-                else f"not found: {configured_python}"
-            ),
-            required_for=("service", "inference"),
+            name="service_python",
+            ok=service_python_resolved is not None,
+            detail=service_python_resolved or f"not found: {settings.service_python_bin}",
+            required_for=("service",),
         ),
         CheckResult(
-            name="default_venv_dir",
-            ok=default_venv_dir.is_dir(),
-            detail=(
-                str(default_venv_dir)
-                if default_venv_dir.is_dir()
-                else f"missing: {default_venv_dir}"
-            ),
-            required_for=(),
+            name="comfyui_python",
+            ok=comfyui_python_resolved is not None,
+            detail=comfyui_python_resolved or f"not found: {settings.comfyui_python_bin}",
+            required_for=("backend",),
         ),
         CheckResult(
-            name="wan_repo_dir",
-            ok=wan_repo_dir.is_dir(),
-            detail=str(wan_repo_dir) if wan_repo_dir.is_dir() else f"missing: {wan_repo_dir}",
-            required_for=("inference",),
+            name="comfyui_dir",
+            ok=settings.comfyui_root_dir.is_dir(),
+            detail=(
+                str(settings.comfyui_root_dir)
+                if settings.comfyui_root_dir.is_dir()
+                else f"missing: {settings.comfyui_root_dir}"
+            ),
+            required_for=("backend",),
         ),
         CheckResult(
-            name="wan_generate_py",
-            ok=wan_generate_py.is_file(),
+            name="workflow_template",
+            ok=settings.comfyui_workflow_template.is_file(),
             detail=(
-                str(wan_generate_py)
-                if wan_generate_py.is_file()
-                else f"missing: {wan_generate_py}"
+                str(settings.comfyui_workflow_template)
+                if settings.comfyui_workflow_template.is_file()
+                else f"missing: {settings.comfyui_workflow_template}"
             ),
-            required_for=("inference",),
-        ),
-        CheckResult(
-            name="wan_model_dir",
-            ok=wan_model_dir.is_dir(),
-            detail=(
-                str(wan_model_dir)
-                if wan_model_dir.is_dir()
-                else f"missing: {wan_model_dir}"
-            ),
-            required_for=("inference",),
+            required_for=("backend",),
         ),
     ]
 
-    nvidia_smi_path = shutil.which("nvidia-smi")
-    if nvidia_smi_path is None:
+    for model_path in settings.comfyui_required_model_paths:
         checks.append(
             CheckResult(
-                name="nvidia_smi",
-                ok=False,
-                detail="nvidia-smi not found on PATH",
-                required_for=("inference",),
-            )
-        )
-    else:
-        ok, detail = _run_command(["nvidia-smi"])
-        checks.append(
-            CheckResult(
-                name="nvidia_smi",
-                ok=ok,
-                detail=detail.splitlines()[0] if detail else nvidia_smi_path,
-                required_for=("inference",),
+                name=f"model:{model_path.name}",
+                ok=model_path.is_file(),
+                detail=str(model_path) if model_path.is_file() else f"missing: {model_path}",
+                required_for=("model", "backend"),
             )
         )
 
-    nvcc_path = shutil.which("nvcc")
-    if nvcc_path is None:
-        checks.append(
-            CheckResult(
-                name="nvcc",
-                ok=False,
-                detail="nvcc not found on PATH",
-                required_for=("build",) if flash_attn_build_enabled else (),
-            )
+    checks.append(
+        CheckResult(
+            name="nvidia_smi",
+            ok=shutil.which("nvidia-smi") is not None,
+            detail=(
+                _run_command(["nvidia-smi"])[1]
+                if shutil.which("nvidia-smi") is not None
+                else "nvidia-smi not found on PATH"
+            ),
+            required_for=("backend",),
         )
-    else:
-        ok, detail = _run_command(["nvcc", "-V"])
-        checks.append(
-            CheckResult(
-                name="nvcc",
-                ok=ok,
-                detail=detail.splitlines()[-1] if detail else nvcc_path,
-                required_for=("build",) if flash_attn_build_enabled else (),
-            )
-        )
-
-    import_results = _python_import_results(
-        configured_python_resolved,
-        ("fastapi", "uvicorn", "torch", "flash_attn", "multipart"),
     )
-    for module_name, required_for in (
-        ("fastapi", ("service", "inference")),
-        ("uvicorn", ("service", "inference")),
-        ("multipart", ("service", "inference")),
-        ("torch", ("inference",)),
-        ("flash_attn", () if allow_sdpa_fallback else ("inference",)),
-    ):
-        ok, detail = import_results[module_name]
+
+    for module_name, (ok, detail) in service_imports.items():
         checks.append(
             CheckResult(
-                name=f"python_import:{module_name}",
+                name=f"service_import:{module_name}",
                 ok=ok,
                 detail=detail,
-                required_for=required_for,
+                required_for=("service",),
             )
         )
 
-    torch_cuda_ok, torch_cuda_detail = _torch_cuda_status(configured_python_resolved)
+    for module_name, (ok, detail) in comfyui_imports.items():
+        checks.append(
+            CheckResult(
+                name=f"comfyui_import:{module_name}",
+                ok=ok,
+                detail=detail,
+                required_for=("backend",),
+            )
+        )
+
     checks.append(
         CheckResult(
             name="torch_cuda",
             ok=torch_cuda_ok,
             detail=torch_cuda_detail,
-            required_for=("inference",),
+            required_for=("backend",),
+        )
+    )
+    checks.append(
+        CheckResult(
+            name="comfyui_object_info",
+            ok=object_info_ok,
+            detail=object_info_detail,
+            required_for=("backend",),
         )
     )
 
     service_ready = all(
         check.ok for check in checks if "service" in check.required_for
     )
-    inference_ready = all(
-        check.ok for check in checks if "inference" in check.required_for
+    model_ready = all(
+        check.ok for check in checks if "model" in check.required_for
     )
-    flash_attn_build_ready = all(
-        check.ok for check in checks if "build" in check.required_for
+    backend_ready = all(
+        check.ok for check in checks if "backend" in check.required_for
     )
 
     return EnvironmentReport(
-        service_root=service_root,
-        configured_python=configured_python,
-        configured_python_resolved=configured_python_resolved,
+        service_root=settings.service_root,
         service_ready=service_ready,
-        inference_ready=inference_ready,
-        flash_attn_build_enabled=flash_attn_build_enabled,
-        flash_attn_build_ready=flash_attn_build_ready,
+        backend_ready=backend_ready,
+        model_ready=model_ready,
         checks=checks,
     )
 
 
-def _format_text(report: EnvironmentReport) -> str:
-    lines = [
-        "[env] Wan local service environment report",
-        f"[env] service_root={report.service_root}",
-        f"[env] configured_python={report.configured_python}",
-        (
-            f"[env] configured_python_resolved={report.configured_python_resolved}"
-            if report.configured_python_resolved
-            else "[env] configured_python_resolved=<missing>"
-        ),
-        f"[summary] service_ready={'yes' if report.service_ready else 'no'}",
-        f"[summary] inference_ready={'yes' if report.inference_ready else 'no'}",
-        (
-            "[summary] flash_attn_build_enabled="
-            f"{'yes' if report.flash_attn_build_enabled else 'no'}"
-        ),
-        (
-            "[summary] flash_attn_build_ready="
-            f"{'yes' if report.flash_attn_build_ready else 'no'}"
-        ),
-    ]
-
-    for check in report.checks:
-        status = "ok" if check.ok else "missing"
-        required = ",".join(check.required_for) if check.required_for else "info"
-        lines.append(
-            f"[{status}] {check.name} ({required}) -> {check.detail}"
-        )
-
-    if not report.service_ready:
-        lines.append(
-            "[hint] Service runtime is incomplete. Run `bash scripts/setup_wan22.sh` "
-            "inside code/server/wan_local_service."
-        )
-    if not report.inference_ready:
-        lines.append(
-            "[hint] Inference runtime is incomplete. Check the missing Wan repo, "
-            "model directory, torch CUDA state, and flash_attn import above."
-        )
-    elif _env_bool("WAN_ALLOW_SDPA_FALLBACK", True):
-        lines.append(
-            "[hint] flash_attn import is optional in the current SDPA fallback mode. "
-            "Inference can run without it, but performance may be lower."
-        )
-    if not report.flash_attn_build_enabled:
-        lines.append(
-            "[hint] flash_attn local build is disabled by default. Current setup "
-            "and runtime validation target the SDPA fallback path."
-        )
-    elif not report.flash_attn_build_ready:
-        lines.append(
-            "[hint] flash_attn build prerequisites are incomplete. Install the CUDA "
-            "toolkit so `nvcc` is available before retrying setup."
-        )
-    return "\n".join(lines)
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Report Wan local service environment readiness.",
-    )
-    parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format.",
-    )
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Report Wan local service environment status.")
     parser.add_argument(
         "--require",
-        choices=("service", "inference", "build"),
+        choices=("service", "backend", "model"),
         default=None,
-        help="Exit non-zero if the selected readiness target is not satisfied.",
+        help="Exit non-zero when the selected readiness target is not satisfied.",
     )
     args = parser.parse_args(argv)
 
     report = collect_environment_report()
-    if args.format == "json":
-        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
-    else:
-        print(_format_text(report))
 
-    if args.require == "service":
-        return 0 if report.service_ready else 1
-    if args.require == "inference":
-        return 0 if report.inference_ready else 1
-    if args.require == "build":
-        return 0 if report.flash_attn_build_ready else 1
+    print("[env] Wan local service environment report")
+    print(f"[env] service_root={report.service_root}")
+    print(f"[summary] service_ready={'yes' if report.service_ready else 'no'}")
+    print(f"[summary] backend_ready={'yes' if report.backend_ready else 'no'}")
+    print(f"[summary] model_ready={'yes' if report.model_ready else 'no'}")
+
+    for check in report.checks:
+        label = "ok" if check.ok else "missing"
+        scopes = ",".join(check.required_for) or "info"
+        print(f"[{label}] {check.name} ({scopes}) -> {check.detail}")
+
+    if args.require == "service" and not report.service_ready:
+        return 1
+    if args.require == "backend" and not report.backend_ready:
+        return 1
+    if args.require == "model" and not report.model_ready:
+        return 1
     return 0
 
 

@@ -34,6 +34,9 @@ class TaskRecord:
     output_path: str | None
     input_image_path: str | None
     error_message: str | None
+    backend: str | None
+    backend_prompt_id: str | None
+    failure_code: str | None
     log_path: str
     status_message: str | None
     progress_current: int | None
@@ -53,6 +56,9 @@ def _row_to_task(row: sqlite3.Row) -> TaskRecord:
         output_path=row["output_path"],
         input_image_path=row["input_image_path"],
         error_message=row["error_message"],
+        backend=row["backend"],
+        backend_prompt_id=row["backend_prompt_id"],
+        failure_code=row["failure_code"],
         log_path=row["log_path"],
         status_message=row["status_message"],
         progress_current=row["progress_current"],
@@ -77,6 +83,7 @@ class TaskRepository:
         size: str,
         log_path: str,
         input_image_path: str | None = None,
+        backend: str | None = None,
     ) -> TaskRecord:
         timestamp = utcnow_text()
         with self._connect() as connection:
@@ -93,13 +100,16 @@ class TaskRepository:
                     output_path,
                     input_image_path,
                     error_message,
+                    backend,
+                    backend_prompt_id,
+                    failure_code,
                     log_path,
                     status_message,
                     progress_current,
                     progress_total,
                     progress_percent
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -111,6 +121,9 @@ class TaskRepository:
                     timestamp,
                     None,
                     input_image_path,
+                    None,
+                    backend,
+                    None,
                     None,
                     log_path,
                     None,
@@ -195,6 +208,7 @@ class TaskRepository:
                 update_time = ?,
                 output_path = NULL,
                 error_message = NULL,
+                failure_code = NULL,
                 status_message = ?,
                 progress_current = NULL,
                 progress_total = NULL,
@@ -204,24 +218,67 @@ class TaskRepository:
             (TASK_STATUS_RUNNING, utcnow_text(), "starting", task_id),
         )
 
-    def mark_task_succeeded(self, task_id: str, output_path: str) -> None:
+    def mark_task_succeeded(
+        self,
+        task_id: str,
+        output_path: str,
+        *,
+        backend_prompt_id: str | None = None,
+    ) -> None:
         self._execute(
             """
             UPDATE tasks
-            SET status = ?, update_time = ?, output_path = ?, error_message = NULL
+            SET
+                status = ?,
+                update_time = ?,
+                output_path = ?,
+                error_message = NULL,
+                failure_code = NULL,
+                backend_prompt_id = COALESCE(?, backend_prompt_id),
+                status_message = ?,
+                progress_percent = ?,
+                progress_current = COALESCE(progress_total, progress_current)
             WHERE task_id = ?
             """,
-            (TASK_STATUS_SUCCEEDED, utcnow_text(), output_path, task_id),
+            (
+                TASK_STATUS_SUCCEEDED,
+                utcnow_text(),
+                output_path,
+                backend_prompt_id,
+                "finished",
+                100,
+                task_id,
+            ),
         )
 
-    def mark_task_failed(self, task_id: str, error_message: str) -> None:
+    def mark_task_failed(
+        self,
+        task_id: str,
+        error_message: str,
+        *,
+        failure_code: str | None = None,
+        backend_prompt_id: str | None = None,
+    ) -> None:
         self._execute(
             """
             UPDATE tasks
-            SET status = ?, update_time = ?, output_path = NULL, error_message = ?
+            SET
+                status = ?,
+                update_time = ?,
+                output_path = NULL,
+                error_message = ?,
+                failure_code = ?,
+                backend_prompt_id = COALESCE(?, backend_prompt_id)
             WHERE task_id = ?
             """,
-            (TASK_STATUS_FAILED, utcnow_text(), error_message, task_id),
+            (
+                TASK_STATUS_FAILED,
+                utcnow_text(),
+                error_message,
+                failure_code,
+                backend_prompt_id,
+                task_id,
+            ),
         )
 
     def update_task_progress(self, task_id: str, progress: TaskProgressState) -> None:
@@ -244,6 +301,16 @@ class TaskRepository:
                 progress.progress_percent,
                 task_id,
             ),
+        )
+
+    def set_backend_prompt_id(self, task_id: str, backend_prompt_id: str) -> None:
+        self._execute(
+            """
+            UPDATE tasks
+            SET backend_prompt_id = ?, update_time = ?
+            WHERE task_id = ?
+            """,
+            (backend_prompt_id, utcnow_text(), task_id),
         )
 
     def recover_interrupted_tasks(self) -> dict[str, int]:

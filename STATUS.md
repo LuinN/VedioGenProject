@@ -2,566 +2,129 @@
 
 ## 当前状态
 
-当前仓库已有两条主线：
+截至 `2026-05-04`，项目两侧的真实状态是：
 
-- WSL 服务端 MVP 第一阶段已完成，范围保持在 `code/server/wan_local_service/**`
-- Windows Qt6 客户端 MVP 已完成首轮落地，范围保持在 `code/client/qt_wan_chat/**`
+- WSL 服务端已经在 `RTX 3090 24GB` 上完成一次真实 `Wan2.2 I2V-A14B` 出片闭环
+- Windows Qt 客户端已具备任务列表、结果下载、任务删除、进度卡片与本地视频管理能力
+- 当前整条最终用户链路的剩余重点，不再是“服务端能不能跑”，而是“客户端是否完全切到当前单模型 `i2v` 契约并完成真实联调”
 
-已完成：
+服务端当前对外语义：
+
+- `POST /api/tasks`
+  - 只接受 `multipart/form-data`
+  - 只支持 `mode=i2v`
+  - 只允许 `832*480` / `480*832`
+- `GET /healthz`
+  - 返回 `backend`
+  - 返回 `backend_ready`
+  - 返回 `model_ready`
+  - 返回 `backend_reason`
+- 任务对象
+  - 包含 `backend`
+  - 包含 `backend_prompt_id`
+  - 包含 `failure_code`
+- 不再实现 `/api/capabilities`
+
+## 已完成
 
 ### WSL 服务端
 
-- FastAPI 服务入口与 8 个接口
-- FastAPI 轻量进度接口 `GET /api/tasks/{task_id}/progress`
-- FastAPI 结果文件下载接口 `GET /api/results/{task_id}/file`
-- FastAPI 删除任务接口 `DELETE /api/tasks/{task_id}`
-- `POST /api/tasks` 现已同时支持：
-  - `application/json` 的 `t2v`
-  - `multipart/form-data` 的 `t2v` / `i2v`
-- SQLite 任务持久化
-- 单 worker 串行任务执行器
-- Wan2.2 官方 `generate.py` 调用封装
-- 稳定错误码与 HTTP 状态码映射
-- `null` 语义与重启恢复语义固定
-- `setup_wan22.sh` / `run_service.sh` / `run_sample_t2v.sh`
-- `check_env.sh` / `app.env_report`
-- 协议文档、自测报告、集成说明
-- 已为 `GET /api/tasks/{task_id}` / `GET /api/results` 增加 `download_url`
-- 已为任务运行态增加持久化进度字段：
-  - `status_message`
-  - `progress_current`
-  - `progress_total`
-  - `progress_percent`
-- 已为 `i2v` 任务增加输入图片持久化字段：
-  - `input_image_path`
-  - `input_image_exists`
-- 已支持删除非运行中的任务及其产物：
-  - SQLite 任务记录
-  - `logs/<task_id>.log`
-  - `outputs/<task_id>/`
-- 默认模型目录在 README / `.env.example` / `config.py` / 启动脚本之间完成统一
-- `setup_wan22.sh` 已补齐当前真实验证过的缺失运行时依赖：
-  - `einops`
-  - `decord`
-  - `librosa`
-  - `peft`
-- `run_service.sh` 已支持：
-  - `foreground`
-  - `start`
-  - `status`
-  - `stop`
-- 后台模式会写出：
-  - `storage/service.pid`
-  - `logs/service.log`
-- `WanRunner` 失败结果已改为优先回传日志尾部的真实错误摘要，而不再只返回笼统的 `generate.py exited with code N`
-
-当前工作区重新核对后的真实环境状态：
-
-- `code/server/wan_local_service/.venv` 已存在
-- `code/server/wan_local_service/third_party/Wan2.2` 已存在
-- `code/server/wan_local_service/third_party/Wan2.2-TI2V-5B` 已存在
-- `nvidia-smi` 当前可用，GPU 为 `RTX 3090`
-- `nvcc` 当前仍不在 PATH
-- 当前工作区已经可以启动服务并跑通一次真实 `t2v` 生成
-- 当前未完成项主要剩在：
-  - Windows 客户端系统播放器打开动作仍需在真实桌面会话手动复验
-  - 当前 Windows agent 会话对 `\\wsl$` 输出目录访问仍被拒绝，但这条路径已不再是唯一结果获取方式
+- `WanRunner` 主路径已被 `ComfyUiNativeBackend` 替代
+- `TaskRunner` 已切成单一 ComfyUI backend 执行路径
+- ComfyUI 工作流模板已入库：
+  - `code/server/wan_local_service/workflows/wan22_i2v_a14b_lowvram_template.json`
+- ComfyUI 环境脚本已补齐：
+  - `scripts/setup_comfyui.sh`
+  - `scripts/run_comfyui.sh`
+  - `scripts/setup_wan22.sh`
+  - `scripts/run_service.sh`
+  - `scripts/run_sample_i2v.sh`
+- `check_env.sh` / `app.env_report` 已修正为读取真实项目 venv 解释器路径
+- 修复了 ComfyUI 工作流到 API prompt 的 `KSamplerAdvanced` 参数映射
+- 修复了 `run_sample_i2v.sh` 的进度字段解析
+- 4 个 14B 必需模型文件已下载完成
+- 成功真实出片任务：
+  - `task_id=d69cc58c-df85-4fcd-86f3-849072c0e8ec`
+  - `backend_prompt_id=14d77c4b-f272-4ca2-8eff-9715b48d9a0a`
+  - 输出文件：
+    - `code/server/wan_local_service/outputs/d69cc58c-df85-4fcd-86f3-849072c0e8ec/result.mp4`
+- 服务端自动化测试当前为：
+  - `20 passed`
 
 ### Windows Qt 客户端
 
-- Qt6 + CMake + Widgets 客户端工程已创建
-- `ApiClient` 已基于 `QNetworkAccessManager` 实现：
+- Qt6 + CMake + Widgets 客户端工程已创建并可在 Windows 原生环境构建
+- `ApiClient` 已实现：
   - `GET /healthz`
   - `POST /api/tasks`
   - `GET /api/tasks/{task_id}`
   - `GET /api/tasks`
   - `DELETE /api/tasks/{task_id}`
   - `GET /api/results`
-- 主窗口现已收敛为左侧 Tasks + 中间 Wan Chat 两栏：
-  - 任务列表
-  - 聊天区 / 输入框 / 发送按钮
-  - 顶部工具栏
+  - `GET /api/results/{task_id}/file`
+- 主窗口已具备：
+  - 左侧任务列表
+  - 中间 Wan Chat 区
+  - 输入框 / 发送按钮
   - Configuration / Videos / Diagnostics 非模态弹窗
-- 启动自动拉取 `/healthz`、`/api/tasks`、`/api/results`
-- 任务创建后自动轮询并同步刷新任务列表与结果列表
-- 稳定错误体、HTTP 错误、JSON 解析错误、服务不可达错误已实现非阻塞提示
-- `\\wsl$\<distro>\...` 路径转换逻辑已实现
-- 对 `\\wsl$` / `\\wsl.localhost` 路径打开目录时，客户端不再先用 `QDir.exists()` 拦截，而是直接交给 `explorer.exe`
-- 已适配任务详情新增的长任务观测字段：
-  - `status_message`
-  - `progress_current`
-  - `progress_total`
-  - `progress_percent`
-- 任务列表现已展示阶段与采样进度
-- 已接入 `download_url` / `GET /api/results/{task_id}/file`，可把成功结果保存为 Windows 本地 `<task_id>.mp4`
-- 已支持统一下载目录，目录配置写入 `QSettings`
-- 已支持本地 Videos 列表，下载索引持久化到 `QStandardPaths::AppDataLocation/downloaded_videos.json`
-- 已支持双击视频或点击 `Play Selected` 调用 Windows 默认播放器
-- 已支持在 Videos 弹窗中删除本地视频：
-  - `Delete Selected` 会删除对应 Windows 本地 mp4
-  - 同步移除 `downloaded_videos.json` 中的索引项
-  - 不删除任务历史
-- 已支持完成任务卡片显示结果视频首帧截图：
-  - 缩略图缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/thumbnail.png`
-  - 缩略图版本标记缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/thumbnail.version`
-  - 预览视频缓存到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/result.mp4`
-  - 可复用 Videos 索引里的本地 mp4
-  - 缺少本地 mp4 时会按需后台下载到任务缓存目录
-  - 双击任务卡片中的结果截图可调用 Windows 默认播放器
-  - 已修复旧缩略图生成链路可能复用同一帧画面的问题：现在每个任务使用独立解码器、旧缓存按版本失效并重建
-- 已支持服务端联动删除任务：
-  - 左侧 Tasks 顶部 `Delete` 按钮与键盘 `Delete` 可删除选中任务
-  - 客户端会先调用 `DELETE /api/tasks/{task_id}`
-  - 服务端返回 `{deleted: true}` 后，客户端再移除本地任务状态、结果映射、任务 metadata、输入图缓存、缩略图和预览缓存
-  - 删除任务不会删除 Videos 页面中的本地 mp4，也不会移除 `downloaded_videos.json`
-  - 已删除任务 ID 持久化到 `QStandardPaths::AppDataLocation/deleted_tasks.json`
-  - 后续 `/api/tasks` 与 `/api/results` 拉回同一 task_id 时，客户端会继续隐藏该任务
-- 已接入输入区单图附件：
-  - 支持 `png` / `jpg` / `jpeg` / `webp`
-  - 选择后会显示缩略图、文件名和删除按钮
-  - 再次选择会覆盖上一张图片
-- 已接入客户端模型 profile 选择：
-  - 启动时拉取 `GET /api/capabilities`
-  - Configuration 中新增 `Profile` 下拉
-  - 当前可见 profile：
-    - `Wan2.2 TI2V 5B`
-    - `Wan2.2 I2V A14B Low-VRAM`
-  - profile 下拉不再依赖“是否已附图”才可见
-  - 若选中仅支持 `i2v` 的 profile 但当前未附图，客户端会先在本地拦截并提示，而不会直接把错误请求发给服务端
-- 已接入客户端本地任务图片缓存：
-  - `%LOCALAPPDATA%/VideoGenProject/tasks/pending_<uuid>/input_image.<ext>`
-  - 服务端返回 `task_id` 后迁移到 `%LOCALAPPDATA%/VideoGenProject/tasks/<task_id>/`
-  - 每个任务目录写入 `metadata.json`
-- `ApiClient` 已新增 `multipart/form-data` 的 `mode=i2v` 创建任务路径
-- `TaskSummary` / `TaskDetail` 已解析：
-  - `mode`
-  - `size`
-  - `input_image_path`
-  - `input_image_exists`
-- 左侧任务区已从表格改为卡片列表，`i2v` 卡片显示参考图缩略图和“图文生成”，`t2v` 卡片显示“文生视频”
-- 命令行 smoke test 默认等待窗口已提升到 60 分钟，并支持 `--smoke-timeout-ms`
-- 命令行 smoke test 已支持 `--smoke-task-id`，可以挂到已有任务上继续轮询，不会重复创建服务端任务
-- 命令行 smoke test 已支持 `--smoke-download-dir`，可验证终态成功后下载 mp4 到本地目录
-- 命令行 smoke test 已支持 `--smoke-image`，可与 `--smoke-prompt` 配合提交 `i2v`
-- Windows 原生编译已通过
-- Windows 原生启动已通过
-- Windows smoke test 已真实打到本地 FastAPI 服务
-- Windows Qt 客户端已支持构建后自动打包：
-  - `cmake --build code\client\qt_wan_chat\build --parallel` 成功链接后会自动刷新 `code/client/qt_wan_chat/release/`
-  - `release/` 内包含 `qt_wan_chat.exe`、Qt DLL、Qt plugins、Qt Multimedia plugin 和 MinGW runtime
-  - `release/` 已加入客户端 `.gitignore`，不会提交生成包
-- Wan Chat 进度展示已改为可更新任务进度卡片：
-  - 普通消息使用轻量气泡
-  - 每个新建任务在 Chat 中只创建一个按 `task_id` 复用的进度卡片
-  - 轮询进度变化只更新同一卡片，不再追加多条 System 对话
-  - 进度卡片显示状态、阶段、进度条、百分比/步数、已用时间、预计剩余时间和预计完成时间
-  - 任务成功或失败后同一卡片更新为终态，Diagnostics 仍保留每次真实进度变化
+- 已支持：
+  - 本地输入图片附件
+  - 任务轮询与阶段/进度展示
+  - Wan Chat 中按 `task_id` 复用的进度卡片
+  - 下载结果视频到 Windows 本地目录
+  - Videos 列表、本地索引、默认播放器打开
+  - 结果缩略图生成与缓存
+  - 任务删除与本地缓存清理
+- 客户端原生构建、release 打包和既有 smoke 已跑通过
+
+### 文档
+
+- 服务 README 已切到 14B 主线
+- 服务端 API 契约已切到单模型 `i2v`
+- 服务端自测报告已记录本轮真实成功出片
+- Win/WSL 集成文档已更新为“服务端真实跑通，客户端仍需同步最终契约”
+
+## 当前真实环境快照
+
+服务端成功验收时的真实事实：
+
+- `GET /healthz`：
+  - `ok=true`
+  - `backend="comfyui_native"`
+  - `backend_ready=true`
+  - `model_ready=true`
+- 非沙箱 WSL 环境下 `bash scripts/check_env.sh` 为：
+  - `service_ready=yes`
+  - `backend_ready=yes`
+  - `model_ready=yes`
+- `nvidia-smi` 可见：
+  - `RTX 3090`
+  - 运行时显存占用约 `16079 MiB / 24576 MiB`
+- 真实视频参数：
+  - `832x480`
+  - `49` 帧
+  - `16fps`
+  - 时长约 `3.0625s`
+- ComfyUI 真实执行耗时：
+  - `Prompt executed in 00:10:48`
+
+## 当前未完成
+
+- Windows 客户端还没有以“只支持单模型 `i2v`、不依赖 `/api/capabilities`”的最终形态完成一次新的真实端到端联调
+- `AGENTS.md` 仍保留早期 `TI2V-5B / t2v` 的 MVP 文字，与当前服务端主线不一致
+- 重复启动时仍可能看到 ComfyUI `database lock` / `port already in use` 警告，需要后续收敛后台进程管理
 
 ## 最近一次重要进展
 
-2026-04-25：
+`2026-05-04`
 
-- Windows Qt 客户端完成 Wan Chat 进度条与预估时间重构：
-  - Chat 区从 `QTextBrowser` 追加 HTML 改为 `QScrollArea + QVBoxLayout` 的 widget 消息流
-  - 用户消息和关键系统消息仍显示为 ChatGPT 风格气泡
-  - `onTaskCreated` 创建初始任务进度卡片，不再追加“Task created”系统消息
-  - `onTaskFetched` 只刷新对应任务进度卡片；每次进度变化只写入 Diagnostics，不再刷屏
-  - 任务终态时保留一条关键成功/失败系统消息，同时卡片显示终态耗时
-  - ETA 基于客户端首次观察时间和当前 `progress_percent` / `progress_current` 计算
-- Windows 原生构建与回归验证：
-  - 直接运行 CMake 时需要补齐 `D:\Qt\Tools\Ninja`、`D:\Qt\Tools\mingw1310_64\bin`、`D:\Qt\6.11.0\mingw_64\bin` 到 PATH
-  - `cmake --build code\client\qt_wan_chat\build --parallel 1` 通过，并触发 `windeployqt` 刷新 release 包
-  - 补齐 PATH 后再次运行 `cmake --build code\client\qt_wan_chat\build --parallel` 返回 `ninja: no work to do.`
-  - `code\client\qt_wan_chat\release\qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 返回 `succeeded`
-  - smoke 结束时 Qt Multimedia/FFmpeg 输出过一次 `moov atom not found`，未影响任务终态 smoke 结果；仍需真实 UI 目视确认缩略图显示链路
-
-- Windows Qt 客户端新增自动打包到本地 release 目录：
-  - 新增 `tools/package_windows.ps1`
-  - CMake `POST_BUILD` 会调用 `windeployqt --compiler-runtime --force --dir <release> <release\qt_wan_chat.exe>`
-  - 打包目录固定为 `code/client/qt_wan_chat/release/`
-  - 打包脚本会校验 release 路径，避免误删客户端 release 之外的目录
-- Windows 原生打包验证：
-  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过，并自动生成 release 目录
-  - `code/client/qt_wan_chat/release/qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 返回 `succeeded`
-  - `windeployqt` 报告 `Cannot find any version of the dxcompiler.dll and dxil.dll`，但本次打包与 smoke 未受阻
-
-- WSL 服务端已补充删除任务协议：
-  - 新增 `DELETE /api/tasks/{task_id}`
-  - 当前允许删除：
-    - `pending`
-    - `succeeded`
-    - `failed`
-  - 当前拒绝删除：
-    - `running`
-  - 删除成功时会同步清理：
-    - SQLite 任务记录
-    - `logs/<task_id>.log`
-    - `outputs/<task_id>/`
-  - 服务端测试已覆盖：
-    - 成功删除 `succeeded` 任务并移除结果列表项
-    - 成功删除 `pending` 任务
-    - `running` 任务返回 `task_not_deletable`
-    - 缺失任务返回 `task_not_found`
-    - queue 中残留的已删除 task_id 会被 worker 安全跳过
-  - 当前服务端测试已提升到：
-    - `PYTHONPATH=. .venv/bin/python -m pytest -q tests`
-    - `37 passed`
-  - 当前删除功能以 ASGI/pytest 自测为主，本轮没有单独做真实后台 HTTP 手工复验
-
-- Windows Qt 客户端已把 Tasks 删除切到服务端 `DELETE /api/tasks/{task_id}`：
-  - `ApiClient` 新增 `deleteTask(task_id)`
-  - 新增 `TaskDeleteResponse` 解析
-  - Tasks 区 `Delete` 现在先请求服务端删除，成功后才清理本地任务状态、metadata、输入图缓存、缩略图和预览缓存
-  - 删除任务仍不删除用户下载视频；如本地任务缓存目录内存在 Videos 索引指向的 mp4，会保留该文件
-  - Videos 弹窗 `Delete Selected` 继续作为唯一删除本地 mp4 和更新 `downloaded_videos.json` 的入口
-  - 当前运行中服务端探测结果仍返回 `HTTP 405 Method Not Allowed` / `allow: GET`，说明运行进程尚未加载新 DELETE 路由；本轮没有重启服务端
-- Windows 原生客户端构建与回归验证：
-  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
-  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`
-
-- Windows Qt 客户端修复完成任务缩略图串帧/旧缓存问题：
-  - 根因：旧实现复用同一个 `QMediaPlayer + QVideoSink`，切换视频源时可能保存上一条媒体残留帧；同时旧 `thumbnail.png` 只按文件存在判断，不会自动重建
-  - 修复：每个任务缩略图生成使用独立 `QMediaPlayer + QVideoSink`
-  - 修复：新增 `thumbnail.version=2`，旧缩略图无版本或版本不匹配时自动删除并重建
-  - 修复：保存前先删除旧 `thumbnail.png`，避免生成失败时继续展示旧帧
-  - 修复：seek 到任务自己的视频中段附近后再接收帧，并加入定时 fallback，避免 Qt Multimedia 后端不发 `LoadedMedia/BufferedMedia` 时一直超时
-- 真实验证：
-  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
-  - 短暂启动客户端后，3 个成功任务均生成新的 `thumbnail.png` 与 `thumbnail.version`
-  - 3 个缩略图 SHA256 均不同：
-    - `0dfbe405-19cb-4256-a86b-13c49569a5b5`: `F578E7306F5B467296E87276883997C85461632F0BAE64BD395AA46C7BFD1D27`
-    - `18439c7f-d91b-42a4-a5f3-2e90624587f8`: `5720DC16BDB1D1C45024DC71DA00709A6C62BD5EC4C1434DF74FA44FA3EC3C7B`
-    - `57783f7a-5915-49f2-b105-8cd15dd26fbe`: `0FBB94A6A0302F0759A52F04C124447C6A2E0753CF948941E456EF5F7168B065`
-  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`
-
-- Windows Qt 客户端完成 ChatGPT 风格主界面重构：
-  - 启动后不再显示右侧 Configuration / Results / Videos / Diagnostics 面板
-  - 主界面只保留左侧 Tasks 和中间 Wan Chat
-  - Wan Chat 顶部新增工具栏：`Configuration` / `Videos` / `Diagnostics`
-  - `Configuration`、`Videos`、`Diagnostics` 均改为非模态弹窗
-  - `Results` 从可见 UI 删除，仍保留后台 `/api/results` 数据用于 `download_url` 和预览缓存
-- Windows Qt 客户端完成任务结果首帧卡片：
-  - 新增 `Qt6::Multimedia` 依赖
-  - 使用隐藏 `QMediaPlayer + QVideoSink` 从本地 mp4 提取首帧
-  - 成功任务卡片会显示类似 ChatGPT 图片生成结果的媒体预览块
-  - 已用任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 生成真实缩略图：
-    - `C:\Users\37545\AppData\Local\VideoGenProject\tasks\18439c7f-d91b-42a4-a5f3-2e90624587f8\thumbnail.png`
-    - 文件大小：`614256` bytes
-  - 双击预览图会尝试播放本地 mp4；真实桌面播放器弹出仍需人工目视确认
-- Windows 原生客户端构建与回归验证：
-  - `cmake -S code\client\qt_wan_chat -B code\client\qt_wan_chat\build -G Ninja ...` 通过
-  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
-  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`
-
-2026-04-24：
-
-- Windows Qt 客户端已做一轮简约化 UI 调整，使整体更接近 ChatGPT 风格：
-  - 三栏背景改为浅灰，主体控件使用白底、细边框和 8px 内圆角
-  - 中间聊天区改为更轻量的消息气泡样式
-  - 输入区改为 composer 样式，图片 `+` 按钮和 `Send` 按钮收在同一输入容器内
-  - 左侧任务卡片统一为白底细边框，模式/状态使用轻量 pill 标签
-  - Results / Videos / Diagnostics 保持功能不变，仅统一表格和按钮样式
-  - 本轮没有修改服务端，也没有改变任何 HTTP 协议
-- Windows 原生客户端 UI 调整后验证：
-  - `cmake --build code\client\qt_wan_chat\build --parallel` 通过
-  - `git diff --check` 通过，仅 CRLF 提示
-  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 仍返回 `succeeded`
-
-- Windows Qt 客户端已接入图片 + prompt 的 `i2v` 提交入口：
-  - 聊天输入区新增 `+` 添加图片按钮
-  - 选择图片后显示预览块，可删除
-  - 本地校验覆盖：文件存在、扩展名、`QImageReader` 可读、最大 `20 MiB`
-  - 图片发送前复制到 `%LOCALAPPDATA%/VideoGenProject/tasks/pending_<uuid>/`
-  - `POST /api/tasks` 有图时使用 multipart：`mode=i2v`、`prompt`、`size`、`image`
-  - 无图时仍保持原 JSON `mode=t2v` 流程
-  - 服务端返回 `task_id` 后迁移缓存目录并写入 `metadata.json`
-  - 上传失败会清理 pending 图片缓存并展示服务端稳定错误码
-  - 左侧任务列表已改为卡片式展示，图文任务显示参考图缩略图和“图文生成”
-  - 新增 `--smoke-image`
-- Windows 原生客户端构建已重新通过：
-  - `cmake -S code\client\qt_wan_chat -B code\client\qt_wan_chat\build -G Ninja ...`
-  - `cmake --build code\client\qt_wan_chat\build --parallel`
-- 本轮 i2v smoke 真实结果：
-  - 本地测试图：`code/client/qt_wan_chat/build/smoke_assets/i2v_smoke.png`
-  - 命令：`qt_wan_chat.exe --smoke-prompt="i2v client smoke test" --smoke-image=... --smoke-timeout-ms=10000`
-  - 客户端已发起 multipart 请求，但当前正在运行的服务端进程返回：
-    - `HTTP 422`
-    - `code=validation_error`
-    - `body: Input should be a valid dictionary or object to extract fields from`
-  - 该现象说明当前运行中的服务端进程尚未加载本次拉取后的 multipart `i2v` 实现；本轮按用户要求没有启动、停止或重启服务端
-- 现有 T2V 任务 monitor smoke 仍通过：
-  - `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000`
-  - 返回 `status=succeeded`、`output_path` 与 `download_url`
-
-- WSL 服务端已补齐图片 + prompt 生成视频协议：
-  - API `mode` 现支持 `t2v` / `i2v`
-  - `POST /api/tasks` 兼容：
-    - `application/json` 仅 `t2v`
-    - `multipart/form-data` 的 `t2v` / `i2v`
-  - `mode=i2v` 时会把上传图片保存到：
-    - `outputs/<task_id>/input_image.<ext>`
-  - `GET /api/tasks/{task_id}` / `GET /api/tasks` 的任务对象已新增：
-    - `mode`
-    - `size`
-    - `input_image_path`
-  - `GET /api/tasks/{task_id}` 已新增：
-    - `input_image_exists`
-  - `WanRunner` 调用官方 `generate.py` 时，`i2v` 任务会附带 `--image <input_image_path>`
-  - 新增稳定错误码：
-    - `image_required`
-    - `image_not_supported`
-    - `image_too_large`
-    - `image_save_failed`
-  - 服务端测试已覆盖：
-    - JSON `t2v`
-    - multipart `t2v`
-    - multipart `i2v`
-    - 缺图 / 非法格式 / 超大图片
-    - `input_image_path` 落盘
-    - `GET /api/tasks/{task_id}` 返回 `input_image_*`
-    - `WanRunner --image` 参数
-  - 当前服务端测试已提升到：
-    - `PYTHONPATH=. .venv/bin/python -m pytest -q tests`
-    - `31 passed`
-  - `check_env.sh --require service` 现已把 `python-multipart` 作为服务端就绪依赖之一
-  - 本轮没有重跑真实 GPU `i2v` 长任务；当前完成度是“协议、落盘、命令拼装和自测已闭环”
-
-- WSL 服务端已补强实时进度链路，并新增轻量进度协议：
-  - `WanRunner` 现在以非缓冲模式读取 Wan2.2 子进程输出
-  - `tqdm` 的 `\r` 采样进度会被实时拆出、落盘并同步写入 SQLite
-  - `tasks.update_time` 在进度推进时会刷新，不再只在状态切换时更新
-  - 新增 `GET /api/tasks/{task_id}/progress`
-  - 原有 `GET /api/tasks/{task_id}` 也已改为优先返回持久化进度
-  - 服务端测试已覆盖：
-    - 仓库层进度持久化
-    - task runner 透传进度回调
-    - wan runner 实时解析 `tqdm` 采样步数
-    - API 层轻量进度接口
-  - 真实后台服务已复验：
-    - `GET /api/tasks/0dfbe405-19cb-4256-a86b-13c49569a5b5/progress`
-    - 返回 `status_message=finished`
-    - 返回 `progress_current=50`
-    - 返回 `progress_total=50`
-    - 返回 `progress_percent=100`
-
-- WSL 服务端已补充结果文件下载协议：
-  - 新增 `GET /api/results/{task_id}/file`
-  - `GET /api/tasks/{task_id}` 与 `GET /api/results` 已新增 `download_url`
-  - 下载成功时返回 `video/mp4` 与 `attachment; filename="<task_id>.mp4"`
-  - 服务端单测已覆盖：
-    - 成功下载
-    - 未完成任务拒绝下载
-    - 任务已成功但结果文件丢失时报错
-  - 真实后台服务已用任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 复验：
-    - 任务详情返回 `download_url`
-    - `GET /api/results/{task_id}/file` 已成功下载到 `/tmp/18439c7f.mp4`
-    - `ffprobe` 确认下载文件仍为有效 `h264` 视频
-  - 这条新链路用于让 Windows 客户端把视频保存到本地目录，不再依赖 `\\wsl$` 共享路径
-
-- Windows Qt 客户端已完成结果下载与本地视频列表对接：
-  - `TaskDetail` / `ResultItem` 已解析 `download_url`
-  - `ApiClient` 已新增结果下载请求，使用 `QSaveFile` 原子写入本地 mp4
-  - UI 已新增下载目录选择、`Download Selected`、本地 `Videos` 列表与 `Play Selected`
-  - 新任务成功且带 `download_url` 时会自动下载到配置的 Windows 本地目录
-  - 历史结果不批量自动下载，可手动选择结果后下载
-  - `--smoke-download-dir` 已验证任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8` 成功下载到：
-    - `code/client/qt_wan_chat/build/smoke_downloads/18439c7f-d91b-42a4-a5f3-2e90624587f8.mp4`
-  - 本地视频索引已真实写入：
-    - `C:/Users/37545/AppData/Roaming/VideoGenProject/qt_wan_chat/downloaded_videos.json`
-  - 下载文件大小：
-    - `8060815` bytes
-
-- Windows Qt 客户端继续对齐服务端最新任务详情契约：
-  - `TaskDetail` 已解析 `status_message` / `progress_current` / `progress_total` / `progress_percent`
-  - 左侧任务列表新增 `Progress` 与 `Stage` 列
-  - 轮询日志和状态栏会展示 `running | sampling | 18% (9/50)` 这类长任务进度摘要
-  - `qt_wan_chat.exe --smoke-prompt=...` 默认超时从 60 秒提升到 60 分钟
-  - 新增 `--smoke-timeout-ms` 便于真实长任务联调时显式覆盖等待窗口
-  - 新增 `--smoke-task-id`，用于复用已有任务做客户端轮询验证
-  - `\\wsl$` / `\\wsl.localhost` 输出目录打开不再被 `QDir.exists()` 预检查提前拦截
-- Windows 原生客户端构建已重新通过：
-  - `cmake -S code\client\qt_wan_chat -B code\client\qt_wan_chat\build -G Ninja ...`
-  - `cmake --build code\client\qt_wan_chat\build --parallel`
-- 在用户已启动的服务端上完成一次真实 Windows Qt 客户端提交与轮询：
-  - `qt_wan_chat.exe --smoke-prompt="A calm lake at sunrise, slow camera push-in, soft golden light" --smoke-timeout-ms=2700000`
-  - 创建任务 `18439c7f-d91b-42a4-a5f3-2e90624587f8`
-  - 该任务 45 分钟窗口内仍为 `running`，因此第一次 smoke 超时失败
-  - 任务随后真实完成，服务端详情返回 `status=succeeded`、`status_message=finished`、`progress_current=50`、`progress_total=50`、`progress_percent=100`
-  - 使用 `qt_wan_chat.exe --smoke-task-id=18439c7f-d91b-42a4-a5f3-2e90624587f8 --smoke-timeout-ms=10000` 复用同一任务，客户端成功拿到 `succeeded` 与最终 `output_path`
-
-- 服务端可观测性和恢复语义已补强：
-  - `GET /api/tasks/{task_id}` 现已增加：
-    - `status_message`
-    - `progress_current`
-    - `progress_total`
-    - `progress_percent`
-  - 上述字段来自任务日志实时解析，可直接反映 `creating pipeline / loading checkpoints / sampling / saving video / finished`
-  - 任务详情读取时，如果发现 `outputs/<task_id>/result.mp4` 已存在，但数据库状态仍停在 `pending/running`，会自动回填成 `succeeded`
-  - 服务启动恢复时也不再一刀切把遗留 `pending/running` 任务全部改成失败；若输出文件已落盘，会优先恢复为 `succeeded`
-- 服务端脚本已继续收敛：
-  - `run_sample_t2v.sh` 默认等待窗口已从 6 分钟提升到 40 分钟
-  - `run_sample_t2v.sh` 轮询时会打印 `stage` 和采样进度
-  - `run_service.sh start` 现优先走 `setsid` 脱离当前会话
-  - `run_service.sh stop` 在超时后会补一次强制停止，避免遗留僵尸 PID
-  - `setup_wan22.sh` 现已默认 `WAN_ENABLE_FLASH_ATTN_BUILD=0`
-  - 默认安装链不再尝试安装 CUDA toolkit，也不再尝试本地编译 `flash_attn`
-  - 当前服务端的默认可交付路径已经固定为 SDPA fallback，而不是高性能编译链
-- 当前会话已真实补过一轮后台服务复验：
-  - `bash code/server/wan_local_service/scripts/run_service.sh start`
-  - `bash code/server/wan_local_service/scripts/run_service.sh status`
-  - `curl --noproxy '*' http://127.0.0.1:8000/healthz`
-  - `bash code/server/wan_local_service/scripts/run_service.sh stop`
-  - 本轮在当前 agent 里均已成功
-- 当前服务端测试已提升到：
-  - `PYTHONPATH=$PWD .venv/bin/python -m pytest tests -q`
-  - `17 passed`
-- 新增服务端自测报告：
-  - `docs/reports/self_test/server/2026-04-24_server_recovery_and_observability.md`
-
-- 官方 Wan2.2 attention 路径已补上运行态 SDPA fallback：
-  - `code/server/wan_local_service/third_party/Wan2.2/wan/modules/attention.py`
-  - 现在 `flash_attention()` 在 `flash_attn` / `flash_attn_interface` 都缺失时，不再直接断在 `assert FLASH_ATTN_2_AVAILABLE`
-  - 会复用同文件里已有的 `scaled_dot_product_attention` 回退逻辑
-- 服务端当前也已接受这条 fallback 路径：
-  - `WanRunner` 不再把缺少 `flash_attn` 视为默认硬阻塞
-  - `check_env.sh` / `env_report.py` 在真实 WSL 环境里现已显示 `inference_ready=yes`
-  - `flash_attn` 本地编译链默认已关闭，不再作为当前主路径前置
-- 真实服务链已推进到 GPU 满载生成阶段：
-  - 以 `bash code/server/wan_local_service/scripts/run_service.sh foreground` 托管服务
-  - 以 `bash code/server/wan_local_service/scripts/run_sample_t2v.sh` 创建了真实任务 `57783f7a-5915-49f2-b105-8cd15dd26fbe`
-  - 任务已真实从 `pending` 进入 `running`，最终完成并生成视频文件
-  - `nvidia-smi` 已看到 `/python3.12` 占用约 `23.5 GiB / 24 GiB` 显存，`GPU-Util=100%`
-  - 真实输出文件：
-    - `code/server/wan_local_service/outputs/57783f7a-5915-49f2-b105-8cd15dd26fbe/result.mp4`
-  - `ffprobe` 已确认：
-    - 编码：`h264`
-    - 分辨率：`1280x704`
-    - 时长：`5.041667s`
-    - 帧数：`121`
-    - 文件大小：`11051605` bytes
-  - 任务日志尾部已确认：
-    - `Saving generated video to .../result.mp4`
-    - `Finished.`
-    - `generate.py exit code: 0`
-- `run_sample_t2v.sh` 现已按当前 SDPA fallback 模式做长任务适配：
-  - 默认等待窗口已拉长
-  - 当前脚本能直接打印阶段和采样进度
-  - 这次 1280x704 样例完整耗时约 31 分钟，其中采样阶段约 16 分 36 秒
-- `flash_attn` 编译链现已降级为历史保留能力：
-  - `build_flash_attn_resumable.sh` 仍保留在仓库中
-  - 但默认服务端安装与运行路径不再依赖它
-
-- `flash_attn` 本地编译链已改成仓库内可续编模式：
-  - 当前这次真实编译已从 `pip` 的临时目录转存到 `code/server/wan_local_service/third_party/flash-attn-2.8.3-src`
-  - 已在 `2026-04-24 02:46:53 +0800` 主动中断当前 `pip install flash-attn==2.8.3` 进程，避免继续占住夜间会话
-  - 当前持久快照保留了 `22 / 73` 个 `.o` 目标
-  - 最新已编译目标是 `flash_bwd_hdim96_bf16_causal_sm80.o`，时间为 `2026-04-24 02:41:33 +0800`
-  - 新增 `code/server/wan_local_service/scripts/build_flash_attn_resumable.sh`
-  - `code/server/wan_local_service/scripts/setup_wan22.sh` 现在也会改走同一份持久源码树，不再回到 `pip` 的 `/tmp/pip-install-*` 临时目录
-- 当前 `flash_attn` 持久快照已补充到服务端自测报告：
-  - `docs/reports/self_test/server/2026-04-24_flash_attn_resume_snapshot.md`
-- 新增对 `flash_attn` 编译崩溃的系统级复盘：
-  - 已核对 `/var/log/apt/history.log`
-  - 已核对 `/var/log/kern.log`
-  - 已核对 `/var/log/syslog`
-  - 已核对 `/mnt/c/Users/37545/.wslconfig`
-- 已确认：
-  - `cuda-toolkit-13-0` 曾在真实 WSL 中于 `2026-04-23 23:24` 安装完成
-  - 后续 `flash_attn` 不是停在“找不到 `nvcc`”，而是已经真正进入本地 CUDA/C++ 编译
-  - 从 `2026-04-23 23:28` 到 `2026-04-24 01:46` 之间，多次发生全局 OOM
-  - OOM 现场的主进程是 `cicc` / `cc1plus` / `nvcc`
-  - `2026-04-24 01:46:34` 还出现了用户会话 `systemd` 被 OOM 杀死
-  - 这可以直接解释“Codex 自动退出”和“WSL 看起来崩了”的现象
-- `code/server/wan_local_service/scripts/setup_wan22.sh` 已做保守化修正：
-  - 默认 `WAN_FLASH_ATTN_MAX_JOBS` 从 `4` 下调到 `1`
-  - 在 WSL 中若显式把 `MAX_JOBS` 提高，会输出 OOM 风险提示
-  - 在真正开始 `flash_attn` 编译前，会先检查 `MemAvailable` / `SwapFree`
-  - 会额外提示 `dockerd` / `containerd` / `postgres` 等常驻进程占用
-- 运行时 Python 选择已收敛为更稳定的双路径：
-  - `run_service.sh` / `check_env.sh` 默认优先使用 `code/server/wan_local_service/.venv/bin/python`
-  - `WanRunner` 默认使用当前服务进程自己的解释器，而不是外部 shell 中遗留的 `WAN_PYTHON_BIN`
-- 运行阶段的低内存保守模式已改为显式 opt-in：
-  - 默认不再自动压低 `frame_num` / `sample_steps`
-  - 默认不再启用生成前内存硬门槛
-  - 如确实需要，可显式设置：
-    - `WAN_LOW_MEMORY_PROFILE=1`
-    - `WAN_ENFORCE_RUNTIME_MEMORY_GUARD=1`
-
-- 新增 `code/server/wan_local_service/scripts/check_env.sh`
-- 新增 `code/server/wan_local_service/app/env_report.py`
-- `scripts/run_service.sh` 已增加服务启动前检查：
-  - 运行时 Python 缺失时给出明确修复提示
-  - `fastapi` / `uvicorn` 缺失时给出明确修复提示
-- 当前 workspace 再次复核到的真实环境：
-  - `.venv` 已存在
-  - `third_party/Wan2.2` 已存在
-  - `third_party/Wan2.2-TI2V-5B` 已存在
-  - 最新重复探测里 `nvidia-smi` 已恢复可用
-  - `nvcc` 缺失
-  - 系统 `python3` 仍缺少 `fastapi` / `httpx` / `pytest`，但服务实际运行走的是 `.venv`
-- 因此当前真实状态是：
-  - 服务端单测已通过
-  - FastAPI 实例已真实启动
-  - 真实 `t2v` 样例已生成出视频文件
-  - 当前剩余问题不在“能否出片”，而在性能和保活
-
-- `code/server/wan_local_service/scripts/setup_wan22.sh` 已改为可直接处理完整 `flash_attn` 安装链：
-  - `nvcc` 缺失时自动尝试安装 `cuda-toolkit-13-0`
-  - 自动创建并激活 `.venv`
-  - 不再盲目升级 `setuptools`
-  - 显式固定 `setuptools<82`，避免 `torch 2.11.0` 依赖冲突
-  - 预装 `packaging`、`psutil`、`ninja`
-  - 固定安装 `flash-attn==2.8.3 --no-build-isolation`
-- 当前服务端安装目标已收敛为“直接运行 `bash code/server/wan_local_service/scripts/setup_wan22.sh`”，而不是手工逐条输入 pip 命令
-- 按“只走服务端、不走客户端”的方式，直接在 `code/server/wan_local_service/third_party/Wan2.2` 真实重跑了官方 `generate.py`
-- 非提权 sandbox 直跑时，`torch.cuda.current_device()` 先报出：
-  - `RuntimeError: Found no NVIDIA driver on your system`
-- 同一条直跑命令在提权后恢复到真实 WSL / GPU 路径，并继续完成：
-  - T5 checkpoint 加载
-  - VAE checkpoint 加载
-  - 3 个模型 shard 加载
-  - 进入 `Generating video ...` 首个采样 step
-- 2026-04-24 这轮“直接服务端生成链路验证”最终再次失败在：
-  - `wan/modules/attention.py` 的 `assert FLASH_ATTN_2_AVAILABLE`
-- 这次验证说明：
-  - 当前服务端主链路不依赖 Windows Qt 客户端即可直接复现真实生成阻塞
-  - 当前真实主阻塞已收敛到 `flash_attn` 本地编译 OOM，而不是 API 层、任务调度层或 `setuptools` 冲突
-
-2026-04-23：
-
-- Windows Qt 客户端 `code/client/qt_wan_chat` 已真实编译通过并成功启动
-- Windows 客户端已真实完成：
-  - `/healthz`
-  - `/api/tasks`
-  - `/api/results`
-  - `POST /api/tasks`
-  - `pending -> running` 轮询状态更新
-- 最新 Windows smoke task：
-  - `141f1a6d-ba50-44ec-9dec-4662ec43ab7c`
-- 最新 Windows 侧真实阻塞：
-  - 轮询期间服务掉线，客户端收到 `network_error / Connection refused`
-  - `\\wsl$` 路径访问被拒绝，打开目录成功路径未验证
-- 客户端自测报告已新增：
-  - `docs/reports/self_test/client/mvp_client_self_test.md`
-
-- 真实运行了 `bash code/server/wan_local_service/scripts/setup_wan22.sh`
-- WSL 中 `nvidia-smi` 已恢复可用，确认 GPU 为 `RTX 3090`
-- 真实运行了多次 `bash code/server/wan_local_service/scripts/run_sample_t2v.sh`
-- 最新真实任务 `16daa568-fede-4da1-b20b-28f1138d09a1` 已通过服务端执行到官方 `generate.py` 的真实采样阶段
-- 运行时阻塞点已继续推进：
-  - 安装 `librosa` 后，最新前沿到达 `peft`
-  - 安装 `peft` 后，最新任务 `16daa568-fede-4da1-b20b-28f1138d09a1` 已加载 T5、VAE、模型分片，并进入真实采样阶段
-  - 最新真实失败点已确认是 `wan/modules/attention.py` 中的 `assert FLASH_ATTN_2_AVAILABLE`
-- 这轮真实运行已确认：对官方 TI2V-5B 主路径，`flash_attn` 是硬依赖
-- NVIDIA CUDA apt keyring 已在 WSL 中完成安装，当前目标 toolkit 已明确为 `cuda-toolkit-13-0`
-- `setup_wan22.sh` 当前仍在 `flash_attn` 安装阶段遇到真实环境阻塞：
-  - `CUDA_HOME environment variable is not set`
-  - `nvcc was not found`
-  - 当前 agent 会话还缺少可直接完成 `sudo apt-get update/install` 的 sudo 能力
-- 新增服务端改进：
-  - `run_service.sh` 已补齐后台常驻与 PID 管理，用于避免服务绑定在临时终端上
-  - `WanRunner` 新增失败摘要提炼，典型返回现为 `AssertionError (generate.py exit code 1)`
-- 本轮本地验证结果：
-  - `PYTHONPATH=$PWD pytest tests -q` -> `10 passed`
-  - `WAN_SERVICE_SKIP_HEALTHCHECK=1 bash scripts/run_service.sh start/status/stop` 已完成进程级验证
-  - 当前 agent sandbox 对本地监听端口存在限制，后台模式 `/healthz` ready check 仍需在真实 WSL 终端补一次验证
+- Windows Qt 客户端已合入：
+  - Wan Chat 进度卡片与 ETA 展示
+  - 任务删除协议
+  - 构建后自动 release 打包
+  - 缩略图生成链路修复
+- WSL 服务端已合入并真实验证：
+  - `ComfyUI + Wan2.2 I2V-A14B`
+  - 第一条真实 `result.mp4`
+  - `KSamplerAdvanced` 工作流映射修复
+  - 样例脚本进度解析修复

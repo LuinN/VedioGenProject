@@ -5,16 +5,16 @@ import queue
 import threading
 
 from .repository import TaskRepository
-from .wan_runner import WanRunner
+from .task_backend import TaskBackend, TaskBackendEvent
 
 
 _SENTINEL = object()
 
 
 class TaskRunner:
-    def __init__(self, repository: TaskRepository, wan_runner: WanRunner) -> None:
+    def __init__(self, repository: TaskRepository, backend: TaskBackend) -> None:
         self.repository = repository
-        self.wan_runner = wan_runner
+        self.backend = backend
         self._queue: queue.Queue[str | object] = queue.Queue()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -67,20 +67,38 @@ class TaskRunner:
         if running_task is None:
             return
         try:
-            result = self.wan_runner.run_task(
+            result = self.backend.run_task(
                 running_task,
-                progress_callback=lambda progress: self.repository.update_task_progress(
+                event_callback=lambda event: self._handle_backend_event(
                     task_id,
-                    progress,
+                    event,
                 ),
             )
         except Exception as exc:  # pragma: no cover - defensive safety net
-            self.repository.mark_task_failed(task_id, str(exc) or repr(exc))
+            self.repository.mark_task_failed(
+                task_id,
+                str(exc) or repr(exc),
+                failure_code="backend_execution_error",
+            )
             return
 
         if result.success and result.output_path is not None:
-            self.repository.mark_task_succeeded(task_id, result.output_path)
+            self.repository.mark_task_succeeded(
+                task_id,
+                result.output_path,
+                backend_prompt_id=result.backend_prompt_id,
+            )
             return
 
-        error_message = result.error_message or "Wan execution failed without details"
-        self.repository.mark_task_failed(task_id, error_message)
+        error_message = result.error_message or "Backend execution failed without details"
+        self.repository.mark_task_failed(
+            task_id,
+            error_message,
+            failure_code=result.failure_code,
+            backend_prompt_id=result.backend_prompt_id,
+        )
+
+    def _handle_backend_event(self, task_id: str, event: TaskBackendEvent) -> None:
+        if event.backend_prompt_id:
+            self.repository.set_backend_prompt_id(task_id, event.backend_prompt_id)
+        self.repository.update_task_progress(task_id, event.progress)

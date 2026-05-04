@@ -41,6 +41,17 @@ def progress_from_log_line(
         return updated
 
     lower_line = line.lower()
+    if lower_line.startswith("uploading image"):
+        updated.status_message = "uploading image"
+    elif lower_line.startswith("queued"):
+        updated.status_message = "queued"
+    elif lower_line.startswith("sampling"):
+        updated.status_message = "sampling"
+    elif lower_line.startswith("saving video"):
+        updated.status_message = "saving video"
+    elif lower_line.startswith("finished"):
+        updated.status_message = "finished"
+        updated.progress_percent = 100
     if line.startswith("Creating Wan") and "pipeline." in line:
         updated.status_message = "creating pipeline"
     elif "Creating WanModel" in line or "loading " in lower_line:

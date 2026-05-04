@@ -13,14 +13,17 @@ from fastapi.responses import Response
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from .comfyui_backend import ComfyUiNativeBackend
+from .comfyui_manager import ComfyUiManager
 from .config import (
-    API_MODES,
     API_MODE_I2V,
-    API_MODE_T2V,
+    API_MODES,
+    BACKEND_ID_COMFYUI_NATIVE,
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
     SERVICE_NAME,
     Settings,
+    SUPPORTED_CREATE_MODES,
     SUPPORTED_INPUT_IMAGE_CONTENT_TYPES,
     SUPPORTED_INPUT_IMAGE_EXTENSIONS,
     TASK_STATUS_RUNNING,
@@ -54,13 +57,13 @@ from .task_runtime import (
     recover_interrupted_tasks,
 )
 from .task_runner import TaskRunner
-from .wan_runner import WanRunner
 
 
 @dataclass(slots=True)
 class ServiceContext:
     settings: Settings
     repository: TaskRepository
+    manager: ComfyUiManager
     runner: TaskRunner
     ready: bool = False
 
@@ -81,6 +84,9 @@ def _task_to_response(task: TaskRecord) -> TaskCreateResponse:
         output_path=task.output_path,
         input_image_path=task.input_image_path,
         error_message=task.error_message,
+        backend=task.backend,
+        backend_prompt_id=task.backend_prompt_id,
+        failure_code=task.failure_code,
         log_path=task.log_path,
         create_time=task.create_time,
         update_time=task.update_time,
@@ -133,6 +139,9 @@ def _task_to_progress(
         update_time=task.update_time,
         output_exists=runtime_snapshot.output_exists,
         error_message=task.error_message,
+        backend=task.backend,
+        backend_prompt_id=task.backend_prompt_id,
+        failure_code=task.failure_code,
         status_message=runtime_snapshot.status_message,
         progress_current=runtime_snapshot.progress_current,
         progress_total=runtime_snapshot.progress_total,
@@ -194,6 +203,14 @@ def _validate_task_create_payload(
                 f"{', '.join(API_MODES)}."
             ),
         )
+    if payload.mode not in SUPPORTED_CREATE_MODES:
+        raise ApiError(
+            "unsupported_mode",
+            (
+                f"Unsupported mode '{payload.mode}'. This service currently supports: "
+                f"{', '.join(SUPPORTED_CREATE_MODES)}."
+            ),
+        )
     if payload.size not in context.settings.allowed_sizes:
         raise ApiError(
             "invalid_size",
@@ -207,11 +224,6 @@ def _validate_task_create_payload(
             "image_required",
             "mode 'i2v' requires an uploaded image in multipart/form-data.",
         )
-    if payload.mode == API_MODE_T2V and image is not None:
-        raise ApiError(
-            "validation_error",
-            "body.image: image uploads are only supported when mode is 'i2v'.",
-        )
 
 
 def _read_string_field(raw_value: Any, field_name: str) -> str:
@@ -223,22 +235,6 @@ def _read_string_field(raw_value: Any, field_name: str) -> str:
             f"body.{field_name}: Input should be a valid string",
         )
     return raw_value
-
-
-async def _parse_json_task_create_request(request: Request) -> ParsedTaskCreateRequest:
-    try:
-        raw_payload = await request.json()
-    except ValueError as exc:
-        raise ApiError("validation_error", "body: Request body is not valid JSON.") from exc
-
-    try:
-        payload = TaskCreateRequest.model_validate(raw_payload)
-    except ValidationError as exc:
-        raise ApiError(
-            "validation_error",
-            _validation_message_from_errors(exc.errors()),
-        ) from exc
-    return ParsedTaskCreateRequest(payload=payload)
 
 
 async def _parse_form_task_create_request(request: Request) -> ParsedTaskCreateRequest:
@@ -283,12 +279,15 @@ async def _parse_form_task_create_request(request: Request) -> ParsedTaskCreateR
 async def _parse_task_create_request(request: Request) -> ParsedTaskCreateRequest:
     content_type = request.headers.get("content-type", "").lower()
     if content_type.startswith("application/json"):
-        return await _parse_json_task_create_request(request)
+        raise ApiError(
+            "validation_error",
+            "body: Content-Type must be multipart/form-data for i2v requests.",
+        )
     if content_type.startswith("multipart/form-data"):
         return await _parse_form_task_create_request(request)
     raise ApiError(
         "validation_error",
-        "body: Content-Type must be application/json or multipart/form-data.",
+        "body: Content-Type must be multipart/form-data for i2v requests.",
     )
 
 
@@ -437,8 +436,18 @@ def _get_context(request: Request) -> ServiceContext:
     if not isinstance(context, ServiceContext):
         raise ApiError("service_not_ready", "The service context is not available.")
     if not context.ready:
-        raise ApiError("service_not_ready", "The service is not ready to accept tasks.")
+        raise ApiError("service_not_ready", "The service is not ready to accept requests.")
     return context
+
+
+def _require_backend_ready(context: ServiceContext) -> None:
+    status = context.manager.get_status()
+    if status.backend_ready:
+        return
+    raise ApiError(
+        "service_not_ready",
+        status.reason or "The ComfyUI backend is not ready.",
+    )
 
 
 def _reconcile_task(context: ServiceContext, task: TaskRecord) -> TaskRecord:
@@ -462,11 +471,13 @@ async def lifespan(app: FastAPI) -> Iterator[None]:
     init_db(settings.db_path)
     repository = TaskRepository(settings.db_path)
     recover_interrupted_tasks(repository, settings.outputs_dir)
-    runner = TaskRunner(repository, WanRunner(settings))
+    manager = ComfyUiManager(settings)
+    runner = TaskRunner(repository, ComfyUiNativeBackend(settings, manager))
     await runner.start()
     context = ServiceContext(
         settings=settings,
         repository=repository,
+        manager=manager,
         runner=runner,
         ready=True,
     )
@@ -480,7 +491,7 @@ async def lifespan(app: FastAPI) -> Iterator[None]:
 
 app = FastAPI(
     title="Wan Local Service",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 app.add_exception_handler(ApiError, api_error_handler)
@@ -493,8 +504,19 @@ app.add_exception_handler(Exception, unhandled_error_handler)
     response_model=HealthResponse,
     responses={500: {"model": ErrorResponse}},
 )
-async def healthz() -> HealthResponse:
-    return HealthResponse(ok=True, service=SERVICE_NAME)
+async def healthz(request: Request) -> HealthResponse:
+    context = getattr(request.app.state, "service_context", None)
+    if not isinstance(context, ServiceContext):
+        return HealthResponse(ok=True, service=SERVICE_NAME)
+    backend_status = context.manager.get_status()
+    return HealthResponse(
+        ok=True,
+        service=SERVICE_NAME,
+        backend=backend_status.backend,
+        backend_ready=backend_status.backend_ready,
+        model_ready=backend_status.model_ready,
+        backend_reason=backend_status.reason,
+    )
 
 
 @app.post(
@@ -513,6 +535,7 @@ async def create_task(request: Request) -> TaskCreateResponse:
     context = _get_context(request)
     parsed = await _parse_task_create_request(request)
     _validate_task_create_payload(context, parsed.payload, parsed.image)
+    _require_backend_ready(context)
     task_id = str(uuid4())
     log_path = str((context.settings.logs_dir / f"{task_id}.log").resolve())
     try:
@@ -530,6 +553,7 @@ async def create_task(request: Request) -> TaskCreateResponse:
             size=parsed.payload.size,
             log_path=log_path,
             input_image_path=input_image_path,
+            backend=BACKEND_ID_COMFYUI_NATIVE,
         )
         try:
             await context.runner.enqueue(task.task_id)
