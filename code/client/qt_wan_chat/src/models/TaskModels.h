@@ -16,21 +16,10 @@ namespace TaskModels {
 struct HealthResponse {
     bool ok = false;
     QString service;
-};
-
-struct CapabilityProfile {
-    QString id;
-    QString label;
     QString backend;
-    QStringList modes;
-    QStringList sizes;
-    QString defaultSize;
-    bool available = false;
-    QString availabilityReason;
-};
-
-struct CapabilityListResponse {
-    QList<CapabilityProfile> items;
+    bool backendReady = false;
+    bool modelReady = false;
+    QString backendReason;
 };
 
 struct ApiErrorPayload {
@@ -49,6 +38,9 @@ struct TaskSummary {
     QString inputImagePath;
     QString errorMessage;
     QString logPath;
+    QString backend;
+    QString backendPromptId;
+    QString failureCode;
     QString createTimeRaw;
     QString updateTimeRaw;
     QDateTime createTime;
@@ -268,7 +260,10 @@ inline bool parseTaskSummaryObject(const QJsonObject &object, TaskSummary &targe
 
     if (!readOptionalNullableString(object, QStringLiteral("mode"), target.mode, error)
         || !readOptionalNullableString(object, QStringLiteral("size"), target.size, error)
-        || !readOptionalNullableString(object, QStringLiteral("input_image_path"), target.inputImagePath, error)) {
+        || !readOptionalNullableString(object, QStringLiteral("input_image_path"), target.inputImagePath, error)
+        || !readOptionalNullableString(object, QStringLiteral("backend"), target.backend, error)
+        || !readOptionalNullableString(object, QStringLiteral("backend_prompt_id"), target.backendPromptId, error)
+        || !readOptionalNullableString(object, QStringLiteral("failure_code"), target.failureCode, error)) {
         return false;
     }
 
@@ -318,70 +313,11 @@ inline bool parseHealthResponse(const QJsonDocument &document, HealthResponse &t
         || !requireString(object, QStringLiteral("service"), target.service, error)) {
         return false;
     }
-    return true;
-}
-
-inline bool parseStringArray(const QJsonArray &source, QStringList &target, QString &error)
-{
-    target.clear();
-    target.reserve(source.size());
-    for (int index = 0; index < source.size(); ++index) {
-        const QJsonValue value = source.at(index);
-        if (!value.isString()) {
-            error = QStringLiteral("Array item %1 must be a string, got %2.")
-                        .arg(index)
-                        .arg(jsonTypeName(value));
-            return false;
-        }
-        target.append(value.toString());
-    }
-    return true;
-}
-
-inline bool parseCapabilityObject(const QJsonObject &object, CapabilityProfile &target, QString &error)
-{
-    QJsonArray modes;
-    QJsonArray sizes;
-    if (!requireString(object, QStringLiteral("id"), target.id, error)
-        || !requireString(object, QStringLiteral("label"), target.label, error)
-        || !requireString(object, QStringLiteral("backend"), target.backend, error)
-        || !requireArray(object, QStringLiteral("modes"), modes, error)
-        || !requireArray(object, QStringLiteral("sizes"), sizes, error)
-        || !requireString(object, QStringLiteral("default_size"), target.defaultSize, error)
-        || !requireBool(object, QStringLiteral("available"), target.available, error)
-        || !readOptionalNullableString(object, QStringLiteral("availability_reason"), target.availabilityReason, error)
-        || !parseStringArray(modes, target.modes, error)
-        || !parseStringArray(sizes, target.sizes, error)) {
+    if (!readOptionalNullableString(object, QStringLiteral("backend"), target.backend, error)
+        || !readOptionalNullableBool(object, QStringLiteral("backend_ready"), target.backendReady, error)
+        || !readOptionalNullableBool(object, QStringLiteral("model_ready"), target.modelReady, error)
+        || !readOptionalNullableString(object, QStringLiteral("backend_reason"), target.backendReason, error)) {
         return false;
-    }
-    return true;
-}
-
-inline bool parseCapabilitiesResponse(const QJsonDocument &document, CapabilityListResponse &target, QString &error)
-{
-    if (!document.isObject()) {
-        error = QStringLiteral("Capabilities response root must be a JSON object.");
-        return false;
-    }
-
-    QJsonArray items;
-    if (!requireArray(document.object(), QStringLiteral("items"), items, error)) {
-        return false;
-    }
-
-    target.items.clear();
-    target.items.reserve(items.size());
-    for (int index = 0; index < items.size(); ++index) {
-        if (!items.at(index).isObject()) {
-            error = QStringLiteral("Capability item %1 must be a JSON object.").arg(index);
-            return false;
-        }
-        CapabilityProfile item;
-        if (!parseCapabilityObject(items.at(index).toObject(), item, error)) {
-            error = QStringLiteral("Capability item %1: %2").arg(index).arg(error);
-            return false;
-        }
-        target.items.append(item);
     }
     return true;
 }
@@ -515,8 +451,6 @@ inline bool parseErrorResponse(const QByteArray &payload, ApiErrorPayload &targe
 } // namespace TaskModels
 
 Q_DECLARE_METATYPE(TaskModels::HealthResponse)
-Q_DECLARE_METATYPE(TaskModels::CapabilityProfile)
-Q_DECLARE_METATYPE(TaskModels::CapabilityListResponse)
 Q_DECLARE_METATYPE(TaskModels::TaskSummary)
 Q_DECLARE_METATYPE(TaskModels::TaskDetail)
 Q_DECLARE_METATYPE(TaskModels::TaskListResponse)

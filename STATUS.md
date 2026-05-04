@@ -2,11 +2,11 @@
 
 ## 当前状态
 
-截至 `2026-05-04`，项目两侧的真实状态是：
+截至 `2026-05-05`，项目两侧的真实状态是：
 
 - WSL 服务端已经在 `RTX 3090 24GB` 上完成一次真实 `Wan2.2 I2V-A14B` 出片闭环
-- Windows Qt 客户端已具备任务列表、结果下载、任务删除、进度卡片与本地视频管理能力
-- 当前整条最终用户链路的剩余重点，不再是“服务端能不能跑”，而是“客户端是否完全切到当前单模型 `i2v` 契约并完成真实联调”
+- Windows Qt 客户端已切到当前单模型 `i2v` 契约，并在 Windows 原生 Qt/MinGW 工具链下完成构建与 release 打包
+- 当前整条最终用户链路的剩余重点，不再是“服务端能不能跑”或“客户端契约是否同步”，而是“用当前客户端重新完成一次真实 Win/WSL 端到端联调”
 
 服务端当前对外语义：
 
@@ -75,7 +75,15 @@
   - Videos 列表、本地索引、默认播放器打开
   - 结果缩略图生成与缓存
   - 任务删除与本地缓存清理
-- 客户端原生构建、release 打包和既有 smoke 已跑通过
+- 已按服务端最终契约收敛：
+  - 不再请求 `/api/capabilities`
+  - 不再提交 `mode=t2v`
+  - 创建任务只走 `multipart/form-data` 的 `mode=i2v`
+  - 发送前强制要求本地输入图片
+  - 尺寸固定为 `832*480` / `480*832`
+  - `GET /healthz` 解析 `backend_ready` / `model_ready` / `backend_reason`
+  - 任务对象解析 `backend` / `backend_prompt_id` / `failure_code`
+- 客户端原生构建、release 打包已跑通过
 
 ### 文档
 
@@ -110,11 +118,24 @@
 
 ## 当前未完成
 
-- Windows 客户端还没有以“只支持单模型 `i2v`、不依赖 `/api/capabilities`”的最终形态完成一次新的真实端到端联调
+- Windows 客户端已完成单模型 `i2v` 契约适配，但还没有用当前服务端重新完成一次真实端到端联调
 - `AGENTS.md` 仍保留早期 `TI2V-5B / t2v` 的 MVP 文字，与当前服务端主线不一致
 - 重复启动时仍可能看到 ComfyUI `database lock` / `port already in use` 警告，需要后续收敛后台进程管理
 
 ## 最近一次重要进展
+
+`2026-05-05`
+
+- Windows Qt 客户端已合入服务端最新生成业务适配：
+  - 移除 `/api/capabilities` 客户端调用链
+  - 移除 JSON `t2v` 创建任务路径
+  - 固定 UI 为 `Wan2.2 I2V-A14B / ComfyUI`
+  - smoke 创建任务现在必须提供 `--smoke-image`
+  - 失败诊断补充 `failure_code` 和 `backend_prompt_id`
+- Windows 原生构建验证通过：
+  - Ninja 编译对象文件通过
+  - `qt_wan_chat.exe` 链接通过
+  - `windeployqt` release 打包通过
 
 `2026-05-04`
 

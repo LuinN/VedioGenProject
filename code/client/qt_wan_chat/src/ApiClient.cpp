@@ -1,7 +1,6 @@
 #include "ApiClient.h"
 
 #include <QJsonDocument>
-#include <QJsonObject>
 #include <QFile>
 #include <QFileInfo>
 #include <QHttpMultiPart>
@@ -55,8 +54,6 @@ QString requestKindName(RequestKind kind)
     switch (kind) {
     case RequestKind::HealthCheck:
         return QStringLiteral("GET /healthz");
-    case RequestKind::FetchCapabilities:
-        return QStringLiteral("GET /api/capabilities");
     case RequestKind::CreateTask:
         return QStringLiteral("POST /api/tasks");
     case RequestKind::FetchTask:
@@ -112,19 +109,7 @@ void ApiClient::checkHealth()
     sendGetRequest(RequestKind::HealthCheck, url);
 }
 
-void ApiClient::fetchCapabilities()
-{
-    if (!m_baseUrl.isValid()) {
-        emitInvalidBaseUrlFailure(RequestKind::FetchCapabilities, QStringLiteral("Service base URL is not configured."));
-        return;
-    }
-
-    QUrl url = m_baseUrl;
-    url.setPath(QStringLiteral("/api/capabilities"));
-    sendGetRequest(RequestKind::FetchCapabilities, url);
-}
-
-void ApiClient::createTask(const QString &prompt, const QString &size, const QString &profile)
+void ApiClient::createImageTask(const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId)
 {
     if (!m_baseUrl.isValid()) {
         emitInvalidBaseUrlFailure(RequestKind::CreateTask, QStringLiteral("Service base URL is not configured."));
@@ -133,27 +118,7 @@ void ApiClient::createTask(const QString &prompt, const QString &size, const QSt
 
     QUrl url = m_baseUrl;
     url.setPath(QStringLiteral("/api/tasks"));
-    QJsonObject payload{
-        {QStringLiteral("mode"), QStringLiteral("t2v")},
-        {QStringLiteral("prompt"), prompt},
-        {QStringLiteral("size"), size},
-    };
-    if (!profile.trimmed().isEmpty()) {
-        payload.insert(QStringLiteral("profile"), profile.trimmed());
-    }
-    sendPostRequest(RequestKind::CreateTask, url, payload);
-}
-
-void ApiClient::createImageTask(const QString &prompt, const QString &size, const QString &localImagePath, const QString &profile, const QString &clientRequestId)
-{
-    if (!m_baseUrl.isValid()) {
-        emitInvalidBaseUrlFailure(RequestKind::CreateTask, QStringLiteral("Service base URL is not configured."));
-        return;
-    }
-
-    QUrl url = m_baseUrl;
-    url.setPath(QStringLiteral("/api/tasks"));
-    sendMultipartCreateTask(url, prompt, size, localImagePath, profile, clientRequestId);
+    sendMultipartCreateTask(url, prompt, size, localImagePath, clientRequestId);
 }
 
 void ApiClient::fetchTask(const QString &taskId)
@@ -273,19 +238,6 @@ void ApiClient::sendGetRequest(RequestKind kind, const QUrl &url)
     });
 }
 
-void ApiClient::sendPostRequest(RequestKind kind, const QUrl &url, const QJsonObject &payload)
-{
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json; charset=utf-8"));
-    request.setRawHeader("Accept", "application/json");
-
-    const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    QNetworkReply *reply = m_network.post(request, body);
-    connect(reply, &QNetworkReply::finished, this, [this, kind, reply]() {
-        handleReply(kind, reply);
-    });
-}
-
 void ApiClient::sendDeleteRequest(RequestKind kind, const QUrl &url, const QString &taskId)
 {
     QNetworkRequest request(url);
@@ -298,7 +250,7 @@ void ApiClient::sendDeleteRequest(RequestKind kind, const QUrl &url, const QStri
     });
 }
 
-void ApiClient::sendMultipartCreateTask(const QUrl &url, const QString &prompt, const QString &size, const QString &localImagePath, const QString &profile, const QString &clientRequestId)
+void ApiClient::sendMultipartCreateTask(const QUrl &url, const QString &prompt, const QString &size, const QString &localImagePath, const QString &clientRequestId)
 {
     const QString trimmedPath = localImagePath.trimmed();
     QFile file(trimmedPath);
@@ -338,9 +290,6 @@ void ApiClient::sendMultipartCreateTask(const QUrl &url, const QString &prompt, 
     appendTextPart(QStringLiteral("mode"), QStringLiteral("i2v"));
     appendTextPart(QStringLiteral("prompt"), prompt);
     appendTextPart(QStringLiteral("size"), size);
-    if (!profile.trimmed().isEmpty()) {
-        appendTextPart(QStringLiteral("profile"), profile.trimmed());
-    }
 
     QHttpPart imagePart;
     QString fileName = QFileInfo(trimmedPath).fileName();
@@ -444,15 +393,6 @@ void ApiClient::handleReply(RequestKind kind, QNetworkReply *reply)
             break;
         }
         emit healthChecked(health);
-        break;
-    }
-    case RequestKind::FetchCapabilities: {
-        TaskModels::CapabilityListResponse capabilities;
-        if (!TaskModels::parseCapabilitiesResponse(document, capabilities, error)) {
-            emit requestFailed(buildParseFailure(kind, reply, body, error));
-            break;
-        }
-        emit capabilitiesFetched(capabilities);
         break;
     }
     case RequestKind::CreateTask: {

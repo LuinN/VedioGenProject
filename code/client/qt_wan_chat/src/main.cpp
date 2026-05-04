@@ -72,8 +72,13 @@ int main(int argc, char *argv[])
         QTextStream(stderr) << "--smoke-prompt and --smoke-task-id are mutually exclusive.\n";
         return 2;
     }
+    const QString smokeImagePath = parser.value(smokeImageOption).trimmed();
     if (parser.isSet(smokeImageOption) && !hasSmokePrompt) {
         QTextStream(stderr) << "--smoke-image requires --smoke-prompt.\n";
+        return 2;
+    }
+    if (hasSmokePrompt && smokeImagePath.isEmpty()) {
+        QTextStream(stderr) << "--smoke-prompt requires --smoke-image because the service only supports image-to-video.\n";
         return 2;
     }
 
@@ -92,7 +97,6 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     const QString smokeDownloadDir = parser.value(smokeDownloadDirOption).trimmed();
-    const QString smokeImagePath = parser.value(smokeImageOption).trimmed();
     if (!smokeDownloadDir.isEmpty() && !hasSmokePrompt && !hasSmokeTaskId) {
         QString error;
         if (!window.setDownloadDirectory(smokeDownloadDir, &error)) {

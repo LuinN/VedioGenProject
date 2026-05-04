@@ -2,23 +2,25 @@
 
 ## 当前真实阻塞
 
-### 1. Windows 客户端与服务端最终契约仍存在漂移
+### 1. Windows 客户端尚未完成当前契约的真实端到端联调
 
-当前服务端主线：
+当前事实：
 
-- 只支持 `mode=i2v`
-- 不实现 `/api/capabilities`
-- 固定 `backend="comfyui_native"`
+- 客户端代码已同步服务端当前单模型 `i2v` 契约
+- Windows 原生 Qt/MinGW 构建与 release 打包已通过
+- 还没有用当前客户端对正在运行的 WSL 服务端重新提交一条真实 `i2v` 生成任务
 
 当前风险：
 
-- Windows 客户端如果仍请求 `/api/capabilities`，会拿到 `404`
-- Windows 客户端如果仍提交 `t2v`，会拿到 `unsupported_mode`
-- Windows 客户端如果仍按多 profile 形态驱动 UI，会与当前服务端收口后的协议冲突
+- 代码级契约已经对齐，但真实用户链路仍需重新验证：
+  - Windows Qt 客户端选择图片
+  - `POST /api/tasks(mode=i2v, image, prompt, size)`
+  - 轮询任务状态
+  - 下载并播放 `result.mp4`
 
 影响：
 
-- 在客户端同步新契约前，不能把 Win/WSL 联调视为已最终打通
+- 在完成上述真实联调前，不能把当前客户端最终形态视为已完整验收
 
 ### 2. `AGENTS.md` 仍保留早期 5B MVP 文字
 
